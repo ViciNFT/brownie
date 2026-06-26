@@ -40,6 +40,7 @@ from brownie._config import BROWNIE_FOLDER, CONFIG, REQUEST_HEADERS, _load_proje
 from brownie.convert.datatypes import Wei
 from brownie.convert.normalize import format_input, format_output
 from brownie.convert.utils import (
+    ABICallable,
     build_function_selector,
     build_function_signature,
     get_type_strings,
@@ -1484,7 +1485,7 @@ class OverloadedMethod:
         self.methods: Final[dict[Any, ContractCall | ContractTx]] = {}
         self.natspec: Final[dict[str, Any]] = {}
 
-    def _add_fn(self, abi: ABIFunction, natspec: dict[str, Any]) -> None:
+    def _add_fn(self, abi: ABICallable, natspec: dict[str, Any]) -> None:
         fn = _get_method_object(self._address, abi, self._name, self._owner, natspec)
         key = tuple(i["type"].replace("256", "") for i in abi["inputs"])
         self.methods[key] = fn
@@ -2121,7 +2122,7 @@ def _get_tx(owner: AccountsType | None, args: tuple) -> tuple:
 
 def _get_method_object(
     address: ChecksumAddress,
-    abi: ABIFunction,
+    abi: ABICallable,
     name: str,
     owner: AccountsType | None,
     natspec: dict[str, Any],
