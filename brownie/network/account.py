@@ -800,16 +800,20 @@ class _PrivateKeyAccount(PublicKeyAccount):
         test_function: Optional[Callable[[], bool]] = None,
         max_retries: int = 5,
         required_confs: int = 1,
-    ) -> TransactionReceipt:
+    ) -> TransactionReceipt | None:
         attempt = 0
         sleep_time = 1.0
 
         test_passed = test_function is None or test_function()
-        txid = receipt if isinstance(receipt, str) else receipt.txid
-        try:
-            receipt_timestamp = receipt.timestamp
-        except Exception:
+        if isinstance(receipt, str):
+            txid = receipt
             receipt_timestamp = None
+        else:
+            txid = receipt.txid
+            try:
+                receipt_timestamp = receipt.timestamp
+            except Exception:
+                receipt_timestamp = None
 
         while True:
             attempt += 1
@@ -826,7 +830,7 @@ class _PrivateKeyAccount(PublicKeyAccount):
                             return reloaded_receipt
                     except Exception as ex1:
                         print(
-                            f"Could not load transaction {receipt.txid}: {type(ex1).__name__}({ex1})"
+                            f"Could not load transaction {txid}: {type(ex1).__name__}({ex1})"
                         )
 
                 if attempt >= max_retries:
