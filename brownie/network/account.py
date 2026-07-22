@@ -818,9 +818,7 @@ class _PrivateKeyAccount(PublicKeyAccount):
                         if reloaded_receipt:
                             return reloaded_receipt
                     except Exception as ex1:
-                        print(
-                            f"Could not load transaction {txid}: {type(ex1).__name__}({ex1})"
-                        )
+                        print(f"Could not load transaction {txid}: {type(ex1).__name__}({ex1})")
 
                 if attempt >= max_retries:
                     return receipt if isinstance(receipt, TransactionReceipt) else None

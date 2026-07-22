@@ -16,6 +16,7 @@ ABICallable = Union[ABIFunction, ABIEvent, ABIError]
 def is_abi_callable(abi_element: ABIElement) -> TypeGuard[ABICallable]:
     return abi_element["type"] in ("function", "error", "event")
 
+
 def get_int_bounds(type_str: str) -> tuple[int, int]:
     """Returns the lower and upper bound for an integer type."""
     try:
