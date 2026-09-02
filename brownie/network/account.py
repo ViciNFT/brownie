@@ -744,14 +744,14 @@ class _PrivateKeyAccount(PublicKeyAccount):
                 )
                 undo_thread.start()
 
-                receipt._raise_if_reverted(exc)
-                self.wait_for_complete(
-                    receipt,
-                    test_function=test_function,
-                    max_retries=max_retries,
-                    required_confs=required_confs,
-                )
-                return receipt
+            receipt._raise_if_reverted(exc)
+            self.wait_for_complete(
+                receipt,
+                test_function=test_function,
+                max_retries=max_retries,
+                required_confs=required_confs,
+            )
+            return receipt
         except Exception as ex:
             if max_retries <= 0 or test_function is None:
                 raise ex
