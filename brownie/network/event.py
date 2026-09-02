@@ -1,13 +1,25 @@
 #!/usr/bin/python3
 # mypy: disable-error-code="union-attr"
 
+import threading
 import time
 import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, ValuesView
 from pathlib import Path
 from threading import Lock, Thread
-from typing import TYPE_CHECKING, Any, Final, Generic, TypeVar, Union, cast, final, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Generic,
+    TypeAlias,
+    TypeVar,
+    Union,
+    cast,
+    final,
+    overload,
+)
 
 import eth_event
 from eth_event import EventError
@@ -32,11 +44,13 @@ from brownie.network.web3 import ContractEvent, web3
 if TYPE_CHECKING:
     from brownie.network.contract import Contract
 
+_WATCHER_THREAD_JOIN_TIMEOUT: Final = 1.0
 
-TopicMap = dict[HexStr, TopicMapData]
-DeploymentTopics = dict[ChecksumAddress, TopicMap]
 
-EventData = OrderedDict[str, Any]
+TopicMap: TypeAlias = dict[HexStr, TopicMapData]
+DeploymentTopics: TypeAlias = dict[ChecksumAddress, TopicMap]
+
+EventData: TypeAlias = OrderedDict[str, Any]
 """An OrderedDict which contains the indexed args for a single on-chain event."""
 
 
@@ -244,13 +258,13 @@ class _EventItem(Generic[_TData]):
 
     def values(self) -> ReturnValue:
         """_EventItem.values() -> a list object providing a view on _EventItem[0]'s values"""
-        return ReturnValue(self._ordered[0].values())  # type: ignore [arg-type]
+        return ReturnValue(self._ordered[0].values())
 
 
-Event = _EventItem[EventData]
+Event: TypeAlias = _EventItem[EventData]
 """An _EventItem which represents a single event."""
 
-Events = _EventItem[Event]
+Events: TypeAlias = _EventItem[Event]
 """An _EventItem which represents a collection of events which share the same event name."""
 
 
@@ -272,8 +286,8 @@ class _EventWatchData:
         self._callbacks_list: list[dict] = []
         self.delay: float = delay
         # Members
-        self._event_filter: Final[filters.LogFilter] = event.create_filter(
-            from_block=(web3.eth.block_number - 1)
+        self._event_filter: Final[filters.LogFilter] = _create_event_filter(
+            event, from_block=(web3.eth.block_number - 1)
         )
         self._cooldown_time_over: bool = False
         self.timer = time.time()
@@ -322,21 +336,27 @@ class _EventWatchData:
 
         self.cooldown_time_over = False
         threads: list[Thread] = []
-        for callback in self._callbacks_list:
+        callbacks_to_run = self._callbacks_list.copy()
+        self._callbacks_list.clear()
+        for callback in callbacks_to_run:
+            if callback.get("repeat"):
+                self._callbacks_list.append(callback)
+                data_to_map = events_data
+            else:
+                data_to_map = events_data[:1]
+
             # Creates a thread for each callback
             threads.append(
                 Thread(
                     target=_map_callback_on_list,
                     args=(
                         callback["function"],
-                        events_data,
+                        data_to_map,
                     ),
                     daemon=True,
                 )
             )
             threads[-1].start()
-        # Remove non-repeating callbacks from list
-        self._callbacks_list = [cb for cb in self._callbacks_list if cb.get("repeat")]
         return threads
 
     @property
@@ -365,12 +385,14 @@ class EventWatcher(metaclass=_Singleton):
     def __init__(self) -> None:
         self.target_list_lock: Lock = Lock()
         self.target_events_watch_data: dict[str, _EventWatchData] = {}
-        self._kill: bool = False
         self._has_started: bool = False
-        self._watcher_thread = Thread(target=self._loop, daemon=True)
+        self._watcher_stop_event = threading.Event()
+        self._watcher_thread = Thread(
+            target=self._loop, args=(self._watcher_stop_event,), daemon=True
+        )
 
     def __del__(self) -> None:
-        self.stop()
+        self.stop(wait=False)
 
     def stop(self, wait: bool = True) -> None:
         """
@@ -381,9 +403,23 @@ class EventWatcher(metaclass=_Singleton):
             wait (bool, optional): Whether to wait for thread to join within the function.
                 Defaults to True.
         """
-        self._kill = True
-        if wait is True and self._watcher_thread.is_alive():
-            self._watcher_thread.join()
+        stop_event = self._watcher_stop_event
+        watcher_thread = self._watcher_thread
+
+        if self._has_started is False and not watcher_thread.is_alive():
+            return
+
+        stop_event.set()
+        if wait is True and watcher_thread.is_alive():
+            watcher_thread.join(timeout=_WATCHER_THREAD_JOIN_TIMEOUT)
+            if watcher_thread.is_alive():
+                warnings.warn(
+                    message=(
+                        "Event watcher thread did not exit within "
+                        f"{_WATCHER_THREAD_JOIN_TIMEOUT} seconds."
+                    ),
+                    category=RuntimeWarning,
+                )
         self._has_started = False
 
     def reset(self) -> None:
@@ -416,42 +452,59 @@ class EventWatcher(metaclass=_Singleton):
         if not callable(callback):
             raise TypeError("Argument 'callback' argument must be a callable.")
         delay = max(delay, 0.05)
-        self.target_list_lock.acquire()  # lock
         # Key referring to this specific event (event.address is the address
         # of the contract to which the event is linked)
         event_watch_data_key = f"{str(event.address)}+{event.event_name}"
-        if self.target_events_watch_data.get(event_watch_data_key) is None:
+
+        with self.target_list_lock:
+            target_events_watch_data = self.target_events_watch_data
+            event_watch_data = target_events_watch_data.get(event_watch_data_key)
+            if event_watch_data is not None:
+                # Adds a new callback to the already existing _EventWatchData.
+                event_watch_data.add_callback(callback, repeat)
+                if repeat is True:
+                    # Updates the delay between each check calling the
+                    # _EventWatchData.update_delay function
+                    event_watch_data.update_delay(delay)
+
+        if event_watch_data is None:
             # If the _EventWatchData for 'event' does not exist, creates it.
-            self.target_events_watch_data[event_watch_data_key] = _EventWatchData(
-                event, callback, delay, repeat
-            )
-        else:
-            # Adds a new callback to the already existing _EventWatchData.
-            self.target_events_watch_data[event_watch_data_key].add_callback(callback, repeat)
-            if repeat is True:
-                # Updates the delay between each check calling the
-                # _EventWatchData.update_delay function
-                self.target_events_watch_data[event_watch_data_key].update_delay(delay)
-        self.target_list_lock.release()  # unlock
+            new_event_watch_data = _EventWatchData(event, callback, delay, repeat)
+            with self.target_list_lock:
+                target_events_watch_data = self.target_events_watch_data
+                event_watch_data = target_events_watch_data.get(event_watch_data_key)
+                if event_watch_data is None:
+                    target_events_watch_data[event_watch_data_key] = new_event_watch_data
+                else:
+                    event_watch_data.add_callback(callback, repeat)
+                    if repeat is True:
+                        event_watch_data.update_delay(delay)
+
         # Start watch if not done
         if self._has_started is False:
             self._start_watch()
 
     def _setup(self) -> None:
         """Sets up the EventWatcher instance member variables so it is ready to run"""
-        self.target_list_lock.acquire()
-        self.target_events_watch_data.clear()
-        self.target_list_lock.release()
-        self._kill = False
+        with self.target_list_lock:
+            self.target_events_watch_data.clear()
+        self._watcher_stop_event = threading.Event()
         self._has_started = False
-        self._watcher_thread = Thread(target=self._loop, daemon=True)
+        self._watcher_thread = Thread(
+            target=self._loop, args=(self._watcher_stop_event,), daemon=True
+        )
 
     def _start_watch(self) -> None:
         """Starts the thread running the _loop function"""
+        if self._watcher_thread.ident is not None:
+            self._watcher_stop_event = threading.Event()
+            self._watcher_thread = Thread(
+                target=self._loop, args=(self._watcher_stop_event,), daemon=True
+            )
         self._watcher_thread.start()
         self._has_started = True
 
-    def _loop(self) -> None:
+    def _loop(self, stop_event: threading.Event) -> None:
         """
         Watches for new events. Whenever new events are detected, calls the
         '_EventWatchData._trigger_callbacks' function to run the callbacks instructions
@@ -459,29 +512,45 @@ class EventWatcher(metaclass=_Singleton):
         """
         workers_list: list[Thread] = []
 
-        while not self._kill:
-            try:
-                sleep_time: float = 1.0  # Max sleep time.
-                self.target_list_lock.acquire()  # lock
-                for _, elem in self.target_events_watch_data.items():
+        while not stop_event.is_set():
+            sleep_time: float = 1.0  # Max sleep time.
+            due_watch_data: list[tuple[str, _EventWatchData]] = []
+
+            with self.target_list_lock:
+                for key, elem in self.target_events_watch_data.items():
                     # If cooldown is not over :
                     #   skip and store time left before next check if needed.
                     time_left = elem.time_left
                     if time_left > 0:
                         sleep_time = min(sleep_time, time_left)
-                        continue
-                    # Check for new events & execute callback async if some are found
+                    else:
+                        due_watch_data.append((key, elem))
+
+            for key, elem in due_watch_data:
+                if stop_event.is_set():
+                    break
+                # Check for new events without holding the watcher state lock.
+                try:
                     latest_events = elem.get_new_events()
-                    if len(latest_events) != 0:
-                        workers_list += elem._trigger_callbacks(latest_events)
-                    elem.reset_timer()
-                    # after elem.reset_timer elem.time_left is approximately elem.delay
-                    sleep_time = min(sleep_time, elem.time_left)
-            finally:
-                self.target_list_lock.release()  # unlock
-                # Remove dead threads from the workers_list
-                workers_list = list(filter(lambda x: x.is_alive(), workers_list))
-                time.sleep(sleep_time)
+                except AttributeError as exc:
+                    if _is_provider_teardown_error(exc):
+                        break
+                    raise
+                if stop_event.is_set():
+                    break
+                with self.target_list_lock:
+                    event_watch_data = self.target_events_watch_data.get(key)
+                    should_trigger = event_watch_data is elem and not stop_event.is_set()
+                    if should_trigger:
+                        if len(latest_events) != 0:
+                            workers_list += elem._trigger_callbacks(latest_events)
+                        elem.reset_timer()
+                        # after elem.reset_timer elem.time_left is approximately elem.delay
+                        sleep_time = min(sleep_time, elem.time_left)
+
+            # Remove dead threads from the workers_list
+            workers_list = list(filter(lambda x: x.is_alive(), workers_list))
+            stop_event.wait(sleep_time)
 
         # Join running threads when leaving function.
         for worker_instance in workers_list:
@@ -558,7 +627,9 @@ def _decode_logs(
                         continue
             try:
                 events.extend(
-                    eth_event.decode_logs([item], topics_map, allow_undecoded=True)  # type: ignore [call-overload]
+                    eth_event.decode_logs(
+                        [cast(Mapping[str, Any], item)], topics_map, allow_undecoded=True
+                    )
                 )
             except EventError as exc:
                 warnings.warn(f"{address}: {exc}")
@@ -574,6 +645,8 @@ def _decode_ds_note(
 ) -> DecodedEvent | None:
     # ds-note encodes function selector as the first topic
     # TODO double check typing for `log` input
+    if not log.topics:
+        return None
     topic0 = log.topics[0]
     selector, tail = topic0[:4], topic0[4:]
     selector_hexstr = Selector(hexbytes_to_hexstring(selector))
@@ -612,6 +685,23 @@ def _decode_trace(trace: Sequence[_TraceStep], initial_address: AnyAddress) -> E
         initial_address=initial_address,
     )
     return EventDict(format_event(event) for event in events)
+
+
+def _create_event_filter(
+    event: ContractEvent, from_block: int | None = None, to_block: int | None = None
+) -> filters.LogFilter:
+    filter_kwargs = {}
+    if from_block is not None:
+        filter_kwargs["from_block"] = from_block
+    if to_block is not None:
+        filter_kwargs["to_block"] = to_block
+    return event.create_filter(**filter_kwargs)
+
+
+def _is_provider_teardown_error(exc: AttributeError) -> bool:
+    return web3.provider is None and (
+        getattr(exc, "name", None) == "_is_batching" or "_is_batching" in str(exc)
+    )
 
 
 # dictionary of event topic ABIs specific to a single contract deployment

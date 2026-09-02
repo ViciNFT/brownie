@@ -1,15 +1,24 @@
 import functools
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import Any, Dict, Final, List, Optional, Type
+from typing import Any, Final, TypeAlias
 
+from typing_extensions import override
 from web3 import Web3
+from web3.middleware import Web3Middleware
 from web3.types import RPCEndpoint
+
+Middlewares: TypeAlias = dict[int, list[type["BrownieMiddlewareABC"]]]
+RPCParams: TypeAlias = Sequence[Any]
+BatchRequest: TypeAlias = list[tuple[RPCEndpoint, Any]]
+BatchResponse: TypeAlias = Any
+MakeRequestFn: TypeAlias = Callable[[RPCEndpoint, Any], Any]
+MakeBatchRequestFn: TypeAlias = Callable[[BatchRequest], BatchResponse]
 
 partial: Final = functools.partial
 
 
-class BrownieMiddlewareABC(ABC):
+class BrownieMiddlewareABC(Web3Middleware, ABC):
     """
     Base ABC for all middlewares.
 
@@ -24,6 +33,7 @@ class BrownieMiddlewareABC(ABC):
         Subclasses may optionally include this method. It is called only once,
         when the middleware is being added.
         """
+        super().__init__(w3)
         self.w3: Final = w3
 
     @classmethod
@@ -37,7 +47,8 @@ class BrownieMiddlewareABC(ABC):
         """
         raise NotImplementedError
 
-    def __call__(self, make_request: Callable, w3: Web3) -> Callable:
+    @override
+    def wrap_make_request(self, make_request: MakeRequestFn) -> MakeRequestFn:
         """
         Receive the initial middleware request and return `process_request`.
 
@@ -45,12 +56,21 @@ class BrownieMiddlewareABC(ABC):
         """
         return partial(self.process_request, make_request)
 
+    @override
+    def wrap_make_batch_request(self, make_batch_request: MakeBatchRequestFn) -> MakeBatchRequestFn:
+        """
+        Receive the batch middleware request and return `make_batch_request`.
+
+        Subclasses should NOT include this method.
+        """
+        return make_batch_request
+
     @abstractmethod
     def process_request(
         self,
-        make_request: Callable,
+        make_request: MakeRequestFn,
         method: RPCEndpoint,
-        params: Sequence[Any],
+        params: RPCParams,
     ) -> dict[str, Any]:
         """
         Process an RPC request.
@@ -83,7 +103,7 @@ class BrownieMiddlewareABC(ABC):
         """
 
 
-def get_middlewares(web3: Web3, network_type: str) -> dict:
+def get_middlewares(web3: Web3, network_type: str) -> Middlewares:
     """
     Get a list of middlewares to be used for the given web3 object.
 
@@ -94,11 +114,11 @@ def get_middlewares(web3: Web3, network_type: str) -> dict:
     network_type : str
         One of "live" or "development".
     """
-    middleware_layers: dict[int, list[type[BrownieMiddlewareABC]]] = {}
-    for obj in _middlewares:
-        layer = obj.get_layer(web3, network_type)
+    middleware_layers: Middlewares = {}
+    for middleware in _middlewares:
+        layer = middleware.get_layer(web3, network_type)
         if layer is not None:
-            middleware_layers.setdefault(layer, []).append(obj)
+            middleware_layers.setdefault(layer, []).append(middleware)
 
     return middleware_layers
 

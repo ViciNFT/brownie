@@ -126,7 +126,9 @@ class PytestPrinter:
         self.first_line = True
         builtins.print = self
 
-    def __call__(self, *values, sep=" ", end="\n", file=sys.stdout, flush=False):
+    def __call__(self, *values, sep=" ", end="\n", file=None, flush=False):
+        if file is None:
+            file = sys.stdout
         if file != sys.stdout:
             self._builtins_print(*values, sep=sep, end=end, file=file, flush=flush)
             return
@@ -548,20 +550,14 @@ class PytestBrownieXdistRunner(PytestBrownieRunner):
         Called after collection has been performed, may filter or re-order the
         items in-place.
 
-        If any tests do not use the `module_isolation` fixture, all tests are
-        discarded. This in turn causes `PytestBrownieMaster.pytest_sessionfinish`
-        to raise an exception notifying the user that xdist may only be used
-        when tests are properly isolated.
+        Delegates to the normal collection handling so modules without
+        `module_isolation` are recorded as non-isolated instead of rejected.
 
         Arguments
         ---------
         items : List[_pytest.nodes.Item]
             List of item objects representing the collected tests
         """
-        if next((i for i in items if "module_isolation" not in i.fixturenames), False):
-            items.clear()
-            return True
-
         super().pytest_collection_modifyitems(items)
 
     def pytest_sessionfinish(self):

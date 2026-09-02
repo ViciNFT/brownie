@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import ast
 import shutil
 import sys
 from typing import Any, Final, cast
@@ -51,6 +52,7 @@ DEV_CMD_SETTINGS: Final = frozenset(
     [
         "port",
         "gas_limit",
+        "gas_price",
         "accounts",
         "evm_version",
         "fork",
@@ -62,6 +64,8 @@ DEV_CMD_SETTINGS: Final = frozenset(
         "time",
         "network_id",
         "chain_id",
+        "base_fee",
+        "steps_tracing",
         "unlimited_contract_size",
     ]
 )
@@ -84,8 +88,8 @@ def main() -> None:
 def _list(verbose: bool | str = False) -> None:
     if isinstance(verbose, str):
         try:
-            verbose = cast(bool, eval(verbose.capitalize()))  # nosec B307)
-        except (NameError, SyntaxError) as e:
+            verbose = cast(bool, ast.literal_eval(verbose.capitalize()))
+        except (NameError, SyntaxError, ValueError) as e:
             print("Please pass 'True' or 'False'.")
             raise e
 
@@ -218,7 +222,7 @@ def _delete(id_: str) -> None:
 
 def _import(path_str: str, replace: bool = False) -> None:
     if isinstance(replace, str):
-        replace = eval(replace.capitalize())  # nosec B307
+        replace = ast.literal_eval(replace.capitalize())
 
     path = Path(path_str)
     with path.open() as fp:
@@ -337,8 +341,8 @@ def _set_provider(name: str) -> None:
 def _list_providers(verbose: bool | str = False):
     if isinstance(verbose, str):
         try:
-            verbose = cast(bool, eval(verbose.capitalize()))  # nosec B307)
-        except (NameError, SyntaxError) as e:
+            verbose = cast(bool, ast.literal_eval(verbose.capitalize()))
+        except (NameError, SyntaxError, ValueError) as e:
             print("Please pass 'True' or 'False'.")
             raise e
 

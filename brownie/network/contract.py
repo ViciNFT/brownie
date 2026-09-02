@@ -11,7 +11,7 @@ from pathlib import Path
 from re import Match
 from textwrap import TextWrapper
 from threading import get_ident  # noqa
-from typing import TYPE_CHECKING, Any, Final, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Final, Optional, Sequence, TypeAlias, Union, cast
 
 import requests
 import solcx
@@ -22,9 +22,8 @@ from faster_eth_abi import encode as encode_abi
 from faster_eth_utils import combomethod
 from vvm import get_installable_vyper_versions
 from vvm.utils.convert import to_vyper_version
-from web3._utils import filters
 from web3.datastructures import AttributeDict
-from web3.exceptions import ContractCustomError
+from web3.exceptions import ContractCustomError, Web3RPCError
 from web3.types import LogReceipt
 
 from brownie._c_constants import (
@@ -69,8 +68,8 @@ from brownie.typing import (
 from brownie.utils import color, hexbytes_to_hexstring
 from brownie.utils._color import bright_blue, bright_green, bright_magenta, bright_red
 
-from brownie.network.account import accounts
-from brownie.network.event import _add_deployment_topics, _get_topics, event_watcher
+from brownie.network.account import accounts, rpc
+from brownie.network.event import _add_deployment_topics, _create_event_filter, _get_topics, event_watcher
 from brownie.network.state import (
     chain,
     _add_contract,
@@ -86,7 +85,8 @@ from brownie.network.web3 import ContractEvent, _ContractEvents, _resolve_addres
 if TYPE_CHECKING:
     from brownie.project.main import Project, TempProject
 
-AnyContractMethod = Union["ContractCall", "ContractTx", "OverloadedMethod", "ContractError", "ContractEmittedEvent"]
+AnyContractMethod: TypeAlias = Union["ContractCall", "ContractTx", "OverloadedMethod", "ContractError", "ContractEmittedEvent"]
+LinkReferences: TypeAlias = dict[str, dict[str, list[dict[str, int]]]]
 
 _unverified_addresses: Final[set[ChecksumAddress]] = set()
 
@@ -203,6 +203,75 @@ class _ContractBase:
         return function_sig, input_args
 
 
+def _get_linked_libraries_by_source(build: ContractBuildJson) -> dict[str, set[str]]:
+    link_references = build.get("linkReferences", {})
+    if link_references:
+        return {
+            source_path: set(source_references)
+            for source_path, source_references in link_references.items()
+        }
+    bytecode = build.get("bytecode", "")
+    libraries = {lib.strip("_") for lib in regex_findall("_{1,}[^_]*_{1,}", bytecode)}
+    return {build["sourcePath"]: libraries} if libraries else {}
+
+
+def _get_linked_library_names(build: ContractBuildJson) -> set[str]:
+    libraries_by_source = _get_linked_libraries_by_source(build)
+    return {library for libraries in libraries_by_source.values() for library in libraries}
+
+
+def _get_deployed_library_address(project: Any, library: str) -> str:
+    try:
+        container = project[library]
+    except KeyError:
+        container = []
+    if not container:
+        raise UndeployedLibrary(
+            f"Contract requires '{library}' library, but it has not been deployed yet"
+        )
+    return container[-1].address[-40:].lower()
+
+
+def _link_bytecode_from_references(
+    project: Any, bytecode: str, link_references: LinkReferences
+) -> str:
+    prefix_length = 2 if bytecode.startswith("0x") else 0
+    references = [
+        (location["start"], location["length"], library)
+        for source_references in link_references.values()
+        for library, locations in source_references.items()
+        for location in locations
+    ]
+    for start, length, library in sorted(references, reverse=True):
+        address = _get_deployed_library_address(project, library)
+        location = prefix_length + start * 2
+        length *= 2
+        bytecode = f"{bytecode[:location]}{address}{bytecode[location + length:]}"
+    return bytecode
+
+
+def _link_bytecode_from_markers(project: Any, bytecode: str) -> str:
+    for marker in regex_findall("_{1,}[^_]*_{1,}", bytecode):
+        library = marker.strip("_")
+        address = _get_deployed_library_address(project, library)
+        bytecode = bytecode.replace(marker, address)
+    return bytecode
+
+
+def _link_bytecode(
+    project: Any,
+    build: ContractBuildJson,
+    bytecode_key: str,
+    link_references_key: str,
+) -> str:
+    bytecode = build.get(bytecode_key, "")
+    if not bytecode:
+        return ""
+    if link_references := build.get(link_references_key, {}):
+        return _link_bytecode_from_references(project, bytecode, link_references)
+    return _link_bytecode_from_markers(project, bytecode)
+
+
 class ContractContainer(_ContractBase):
     """List-like container class that holds all Contract instances of the same
     type, and is used to deploy new instances of that contract.
@@ -297,6 +366,12 @@ class ContractContainer(_ContractBase):
             )
 
         build = self._build
+        # If constructor execution removed the code (e.g. selfdestruct), this
+        # address is not attachable even though the creation tx succeeded.
+        actual_bytecode = web3.eth.get_code(address).hex().removeprefix("0x")
+        if not actual_bytecode:
+            raise ContractNotFound(f"No contract deployed at {address}")
+
         contract = ProjectContract(self._project, build, address, owner, tx)
         if not _verify_deployed_code(address, build["deployedBytecode"], build["language"]):
             # prevent trace attempts when the bytecode doesn't match
@@ -345,12 +420,16 @@ class ContractContainer(_ContractBase):
                         compiler._get_solc_remappings(config["solc"]["remappings"]),
                     )
                 )
-                libs = {lib.strip("_") for lib in regex_findall("_{1,}[^_]*_{1,}", self.bytecode)}
+                libraries = _get_linked_libraries_by_source(self._build)
                 compiler_settings = {
                     "evmVersion": self._build["compiler"]["evm_version"],
                     "optimizer": config["solc"]["optimizer"],
                     "libraries": {
-                        Path(source_fp).name: {lib: self._project[lib][-1].address for lib in libs}
+                        source_path: {
+                            library: self._project[library][-1].address
+                            for library in source_libraries
+                        }
+                        for source_path, source_libraries in libraries.items()
                     },
                 }
                 self._flattener = Flattener(source_fp, self._name, remaps, compiler_settings)
@@ -608,16 +687,13 @@ class ContractConstructor:
         return _contract_method_autosuggest(obj.abi["inputs"], True, obj.payable)
 
     def encode_input(self, *args: Any) -> str:
-        bytecode = self._parent.bytecode
         # find and replace unlinked library pointers in bytecode
-        for marker in regex_findall("_{1,}[^_]*_{1,}", bytecode):
-            library = marker.strip("_")
-            if not self._parent._project[library]:
-                raise UndeployedLibrary(
-                    f"Contract requires '{library}' library, but it has not been deployed yet"
-                )
-            address = self._parent._project[library][-1].address[-40:]
-            bytecode = bytecode.replace(marker, address)
+        bytecode = _link_bytecode(
+            self._parent._project,
+            self._parent._build,
+            "bytecode",
+            "linkReferences",
+        )
 
         return bytecode + self.encode_constructor_args(args)
 
@@ -758,10 +834,21 @@ class _DeployedContractBase(_ContractBase):
     ) -> None:
         address = _resolve_address(address)
         web3.isConnected()
-        self.bytecode: Final[HexStr] = (  # type: ignore [assignment]
+        bytecode = self._build.get("deployedBytecode", None)
+        if bytecode and self._project is not None:
+            try:
+                bytecode = _link_bytecode(
+                    self._project,
+                    self._build,
+                    "deployedBytecode",
+                    "deployedLinkReferences",
+                )
+            except UndeployedLibrary:
+                bytecode = None
+        if not bytecode:
             # removeprefix is used for compatibility with both hexbytes<1 and >=1
-            self._build.get("deployedBytecode", None) or web3.eth.get_code(address).hex().removeprefix("0x")
-        )
+            bytecode = web3.eth.get_code(address).hex().removeprefix("0x")
+        self.bytecode: Final = cast(HexStr, bytecode)
         if not self.bytecode:
             raise ContractNotFound(f"No contract deployed at {address}")
         self._owner: Final = owner
@@ -1120,7 +1207,7 @@ class Contract(_DeployedContractBase):
                 try:
                     # first try to call `implementation` per EIP897
                     # https://eips.ethereum.org/EIPS/eip-897
-                    contract = cls.from_abi(name, address, abi)
+                    contract = cls.from_abi(name, address, abi, persist=False)
                     as_proxy_for = contract.implementation.call()
                 except Exception:
                     # if that fails, fall back to the address provided by etherscan
@@ -1131,11 +1218,11 @@ class Contract(_DeployedContractBase):
 
         # if this is a proxy, fetch information for the implementation contract
         if as_proxy_for is not None:
-            implementation_contract = Contract.from_explorer(as_proxy_for)
+            implementation_contract = Contract.from_explorer(as_proxy_for, persist=persist)
             abi = implementation_contract._build["abi"]
 
         if not is_verified:
-            return cls.from_abi(name, address, abi, owner)
+            return cls.from_abi(name, address, abi, owner, persist=persist)
 
         compiler_str = data["result"][0]["CompilerVersion"]
         if compiler_str.startswith("vyper:"):
@@ -1147,12 +1234,14 @@ class Contract(_DeployedContractBase):
         else:
             try:
                 version = cls.get_solc_version(compiler_str, address)
+                # Normalize solcx versions to Brownie's Version type for membership checks.
+                available_solc_versions = {
+                    Version(str(i))
+                    for i in solcx.get_installable_solc_versions()
+                    + solcx.get_installed_solc_versions()
+                }
 
-                is_compilable = (
-                    version >= Version("0.4.22")
-                    and version
-                    in solcx.get_installable_solc_versions() + solcx.get_installed_solc_versions()
-                )
+                is_compilable = version >= Version("0.4.22") and version in available_solc_versions
             except Exception:
                 is_compilable = False
 
@@ -1163,7 +1252,7 @@ class Contract(_DeployedContractBase):
                     "supported by Brownie. Some debugging functionality will not be available.",
                     BrownieCompilerWarning,
                 )
-            return cls.from_abi(name, address, abi, owner)
+            return cls.from_abi(name, address, abi, owner, persist=persist)
         elif data["result"][0]["OptimizationUsed"] in ("true", "false"):
             if not silent:
                 warnings.warn(
@@ -1171,7 +1260,7 @@ class Contract(_DeployedContractBase):
                     "Some debugging functionality will not be available.",
                     BrownieCompilerWarning,
                 )
-            return cls.from_abi(name, address, abi, owner)
+            return cls.from_abi(name, address, abi, owner, persist=persist)
 
         optimizer = {
             "enabled": bool(int(data["result"][0]["OptimizationUsed"])),
@@ -1224,7 +1313,7 @@ class Contract(_DeployedContractBase):
                     " some functionality will not be available.",
                     BrownieCompilerWarning,
                 )
-            return cls.from_abi(name, address, abi, owner)
+            return cls.from_abi(name, address, abi, owner, persist=persist)
 
         build_json = build_json[name]
         if as_proxy_for is not None:
@@ -1442,7 +1531,6 @@ class ContractEvents(_ContractEvents):
 
         async def _listening_task(is_timeout: bool, end_time: float) -> AttributeDict:
             """Generates and returns a coroutine listening for an event"""
-            nonlocal _triggered, _received_data
             timed_out: bool = False
 
             while not _triggered:
@@ -1471,9 +1559,7 @@ class ContractEvents(_ContractEvents):
         if from_block is None and isinstance(to_block, int):
             from_block = to_block - 10
 
-        event_filter: filters.LogFilter = event_type.create_filter(
-            from_block=from_block, to_block=to_block
-        )
+        event_filter = _create_event_filter(event_type, from_block=from_block, to_block=to_block)
         return event_filter.get_all_entries()
 
 
@@ -1844,7 +1930,7 @@ class _ContractMethod(_ContractFragment):
             try:
                 web3.isConnected()
                 data = web3.eth.call({k: v for k, v in tx.items() if v}, block_identifier, override)
-            except ValueError as e:
+            except (ValueError, Web3RPCError) as e:
                 raise VirtualMachineError(e) from None
 
             if self.abi["outputs"] and not data:
@@ -1898,6 +1984,7 @@ class _ContractMethod(_ContractFragment):
             data=self.encode_input(*args),
             allow_revert=tx["allow_revert"],
             silent=silent,
+            skip_undo=tx.get("_skip_undo", False),
             test_function=tx.get("test_function"),
             max_retries=tx.get("max_retries", 5),
         )
@@ -2062,16 +2149,18 @@ class ContractCall(_ContractMethod):
 
             args, tx = _get_tx(self._owner, args)
             tx.update({"gas_price": 0, "from": self._owner or accounts[0]})
+            tx["_skip_undo"] = True
             pc, revert_msg = None, None
+            snapshot_id = rpc._snapshot()
 
             try:
                 self.transact(*args, tx)
-                chain.undo()
             except VirtualMachineError as exc:
                 pc, revert_msg = exc.pc, exc.revert_msg
-                chain.undo()
             except Exception:
                 pass
+            finally:
+                _revert_transact_call(snapshot_id)
 
             try:
                 return self.call(*args)
@@ -2118,6 +2207,10 @@ def _get_tx(owner: AccountsType | None, args: tuple) -> tuple:
         tx["from"] = accounts.at(tx["from"].address, force=True)
 
     return args, tx
+
+
+def _revert_transact_call(snapshot_id: int | str) -> None:
+    chain._current_id = chain._revert(snapshot_id)
 
 
 def _get_method_object(
@@ -2177,9 +2270,16 @@ def _verify_deployed_code(
 
     if language == "Solidity":
         # do not include metadata in comparison
-        idx = -(int(actual_bytecode[-4:], 16) + 2) * 2
+        if actual_no_metadata := actual_bytecode[-4:]:
+            idx = -(int(actual_no_metadata, 16) + 2) * 2
+        else:
+            idx = -4
         actual_bytecode = actual_bytecode[:idx]
-        idx = -(int(expected_bytecode[-4:], 16) + 2) * 2
+
+        if expected_no_metadata := expected_bytecode[-4:]:
+            idx = -(int(expected_no_metadata, 16) + 2) * 2
+        else:
+            idx = -4
         expected_bytecode = expected_bytecode[:idx]
 
     if language == "Vyper":

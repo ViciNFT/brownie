@@ -11,7 +11,7 @@ from base64 import b64encode
 from collections.abc import Iterator, KeysView
 from io import BytesIO
 from types import ModuleType
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, TypeAlias
 from urllib.parse import quote
 
 import requests
@@ -76,6 +76,7 @@ from brownie.utils import notify, hash_source
 
 BUILD_FOLDERS: Final = "contracts", "deployments", "interfaces"
 MIXES_URL: Final = "https://github.com/brownie-mix/{}-mix/archive/{}.zip"
+DOWNLOAD_CHUNK_SIZE: Final = 1024 * 1024
 
 GITIGNORE: Final = """__pycache__
 .env
@@ -89,9 +90,9 @@ GITATTRIBUTES: Final = """*.sol linguist-language=Solidity
 *.vy linguist-language=Python
 """
 
-NamespaceId = ContractName | Literal["interface"]
-ChainDeployments = dict[ContractName, list[ChecksumAddress]]
-DeploymentMap = dict[int | str, ChainDeployments]
+NamespaceId: TypeAlias = ContractName | Literal["interface"]
+ChainDeployments: TypeAlias = dict[ContractName, list[ChecksumAddress]]
+DeploymentMap: TypeAlias = dict[int | str, ChainDeployments]
 
 _loaded_projects: Final[list["Project"]] = []
 
@@ -351,7 +352,9 @@ class Project(_ProjectBase):
         # confirm that this contract was previously compiled
         try:
             source = self._sources.get(contract_name)
-            build_json: ContractBuildJson = self._build.get(contract_name)  # type: ignore [assignment]
+            build_json: ContractBuildJson = self._build.get(  # type: ignore [assignment]
+                contract_name
+            )
         except KeyError:
             return True
         # compare source hashes
@@ -761,7 +764,7 @@ def compile_source(
     if vyper_version is None:
         # if no vyper compiler version is given, try to compile using solidity
         compiler_config["solc"] = {
-            "version": solc_version or str(compiler.solidity.get_version().truncate()),
+            "version": solc_version or str(compiler.solidity.get_version().public),
             "optimize": bool(optimize),
             "runs": runs or 0,
         }
@@ -781,7 +784,7 @@ def compile_source(
         except (PragmaError, VyperNotInstalled):
             pass
 
-    compiler_config["vyper"] = {"version": vyper_version or compiler.vyper.get_version()}
+    compiler_config["vyper"] = {"version": vyper_version or str(compiler.vyper.get_version())}
     try:
         return TempProject("TempVyperProject", {"<stdin>.vy": source}, compiler_config)
     except Exception as exc:
@@ -1093,11 +1096,11 @@ def _stream_download(
 
     total_size = int(response.headers.get("content-length", 0))
     progress_bar = tqdm(total=total_size, unit="iB", unit_scale=True)
-    content = b""
+    content = bytearray()
 
-    for data in response.iter_content(1024, decode_unicode=True):
+    for data in response.iter_content(DOWNLOAD_CHUNK_SIZE):
         progress_bar.update(len(data))
-        content += data
+        content.extend(data)
     progress_bar.close()
 
     with zipfile.ZipFile(BytesIO(content)) as zf:

@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 # mypy: disable-error-code="index,typeddict-unknown-key"
 
-from typing import Any, Dict, Final, List, Optional, Union, cast
+from hashlib import sha1
+from typing import Any, Final, TypeAlias, Union, cast
 
 import solcast
 from eth_typing import ABIElement, HexStr
@@ -53,7 +54,7 @@ STANDARD_JSON: Final[InputJson] = {  # type: ignore [assignment]
     },
 }
 
-EvmVersionSpec = Union[EvmVersion, dict[Language, EvmVersion | None]]
+EvmVersionSpec: TypeAlias = Union[EvmVersion, dict[Language, EvmVersion | None]]
 
 
 # C constants
@@ -370,46 +371,47 @@ def generate_build_json(
 
             ast = output_json["sources"][path_str]["ast"]
 
+            contract_build_json: ContractBuildJson
             if language == "Solidity":
                 contract_node = next(
                     i[contract_name] for i in source_nodes if i.absolutePath == path_str
                 )
-                build_json[contract_alias] = solidity._get_unique_build_json(
+                solidity_build_json = solidity._get_unique_build_json(
                     output_evm,
                     contract_node,
                     statement_nodes,
                     branch_nodes,
                     any(i["type"] == "fallback" for i in abi),
                 )
+                solidity_build_json["language"] = "Solidity"
+                contract_build_json = solidity_build_json
 
             else:
                 if contract_name == "<stdin>":
                     contract_name = contract_alias = ContractName("Vyper")
-                build_json[contract_alias] = vyper._get_unique_build_json(
+                vyper_build_json = vyper._get_unique_build_json(
                     output_evm,
                     path_str,
                     contract_alias,
                     ast,
                     (0, len(source)),
                 )
+                vyper_build_json["language"] = "Vyper"
+                contract_build_json = vyper_build_json
 
-            build_json[contract_alias].update(
-                {
-                    "abi": abi,
-                    "ast": ast,
-                    "compiler": compiler_data,  # type: ignore [typeddict-item]
-                    "contractName": contract_name,
-                    "deployedBytecode": bytecode,
-                    "deployedSourceMap": deployed_bytecode["sourceMap"],
-                    "language": language,  # type: ignore [typeddict-item]
-                    "natspec": natspec,
-                    "opcodes": deployed_bytecode["opcodes"],
-                    "sha1": hash_source(source),  
-                    "source": source,
-                    "sourceMap": output_evm["bytecode"].get("sourceMap", ""),
-                    "sourcePath": path_str,
-                }
-            )
+            contract_build_json["abi"] = abi
+            contract_build_json["ast"] = ast
+            contract_build_json["compiler"] = cast(CompilerConfig, compiler_data)
+            contract_build_json["contractName"] = contract_name
+            contract_build_json["deployedBytecode"] = bytecode
+            contract_build_json["deployedSourceMap"] = deployed_bytecode["sourceMap"]
+            contract_build_json["natspec"] = natspec
+            contract_build_json["opcodes"] = deployed_bytecode["opcodes"]
+            contract_build_json["sha1"] = HexStr(sha1(source.encode()).hexdigest())
+            contract_build_json["source"] = source
+            contract_build_json["sourceMap"] = output_evm["bytecode"].get("sourceMap", "")
+            contract_build_json["sourcePath"] = path_str
+            build_json[contract_alias] = contract_build_json
             size = len(bytecode.removeprefix("0x")) / 2
             if size > 24577:
                 notify(

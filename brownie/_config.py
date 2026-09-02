@@ -4,7 +4,7 @@ import pathlib
 import shutil
 import sys
 import warnings
-from typing import Any, DefaultDict, Final, Literal, NewType, final
+from typing import Any, DefaultDict, Final, Literal, NewType, TypeAlias, final
 
 import yaml
 from dotenv import dotenv_values, load_dotenv
@@ -18,7 +18,7 @@ from brownie._expansion import expand_posix_vars
 from brownie._singleton import _Singleton
 from brownie.typing import EvmVersion
 
-__version__: Final = "1001.22.0"
+__version__: Final = "1001.22.2.3"
 
 BROWNIE_FOLDER: Final = Path(sys.modules["brownie"].__file__).parent  # type: ignore [arg-type]
 DATA_FOLDER: Final = Path.home().joinpath(".brownie")
@@ -37,7 +37,7 @@ python_version: Final = (
 REQUEST_HEADERS: Final = {"User-Agent": f"Brownie/{__version__} (Python/{python_version})"}
 
 
-NetworkType = Literal["live", "development", None]
+NetworkType: TypeAlias = Literal["live", "development", None]
 NetworkConfig = NewType("NetworkConfig", dict[str, Any])
 # TODO: Make this a typed dict
 
@@ -128,7 +128,8 @@ class ConfigContainer:
 
 
 @final
-class Config(ConfigContainer, metaclass=_Singleton): ...
+class Config(ConfigContainer, metaclass=_Singleton):
+    pass
 
 
 @final
@@ -227,19 +228,36 @@ def _load_project_config(project_path: pathlib.Path) -> None:
 
     # Update the network config cmd_settings with project specific cmd_settings
     if "networks" in config_data and isinstance(config_data["networks"], dict):
-        for network, values in config_data["networks"].items():
+        network_configs = config_data["networks"]
+        development_values = network_configs.get("development")
+        if isinstance(development_values, dict):
+            development_cmd_settings = development_values.get("cmd_settings")
+            if isinstance(development_cmd_settings, dict):
+                for values in CONFIG.networks.values():
+                    if "cmd" not in values:
+                        continue
+                    if "cmd_settings" in values and isinstance(values["cmd_settings"], dict):
+                        _recursive_update(values["cmd_settings"], development_cmd_settings)
+                    else:
+                        values["cmd_settings"] = deepcopy(development_cmd_settings)
+
+        for network, values in network_configs.items():
             if (
                 network != "default"
                 and network in CONFIG.networks.keys()
+                and isinstance(values, dict)
+                and "cmd" in CONFIG.networks[network]
                 and "cmd_settings" in values
                 and isinstance(values["cmd_settings"], dict)
             ):
-                if "cmd_settings" in CONFIG.networks[network]:
+                if "cmd_settings" in CONFIG.networks[network] and isinstance(
+                    CONFIG.networks[network]["cmd_settings"], dict
+                ):
                     _recursive_update(
                         CONFIG.networks[network]["cmd_settings"], values["cmd_settings"]
                     )
                 else:
-                    CONFIG.networks[network]["cmd_settings"] = values["cmd_settings"]
+                    CONFIG.networks[network]["cmd_settings"] = deepcopy(values["cmd_settings"])
 
     settings = CONFIG.settings
     settings._unlock()
@@ -262,8 +280,8 @@ def _load_project_compiler_config(project_path: pathlib.Path | None) -> dict:
     return compiler_data
 
 
-def _load_project_envvars(project_path: pathlib.Path) -> dict:
-    config_vars = dict(os.environ)
+def _load_project_envvars(project_path: pathlib.Path) -> dict[str, str | None]:
+    config_vars: dict[str, str | None] = dict(os.environ)
     settings = CONFIG.settings
     if settings.get("dotenv"):
         dotenv_path = settings["dotenv"]
@@ -272,7 +290,7 @@ def _load_project_envvars(project_path: pathlib.Path) -> dict:
         env_path = project_path.joinpath(dotenv_path)
         if not env_path.is_file():
             raise ValueError(f"Dotenv specified in config but not found at path: {env_path}")
-        config_vars.update(dotenv_values(dotenv_path=env_path))  # type: ignore [arg-type]
+        config_vars.update(dotenv_values(dotenv_path=env_path))
     return config_vars
 
 

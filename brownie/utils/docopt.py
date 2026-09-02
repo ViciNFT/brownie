@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 import sys
 from collections.abc import Callable
-from typing import Any, NamedTuple, Union, cast
+from typing import Any, NamedTuple, TypeAlias, Union, cast
 
 from brownie._c_constants import regex_findall, regex_match, regex_sub
 
@@ -149,7 +149,7 @@ def _transform(pattern: _BranchPattern) -> _Either:
     return _Either(*(_Required(*e) for e in result))
 
 
-_SingleMatch = Union[tuple[int, "_LeafPattern"], tuple[None, None]]
+_SingleMatch: TypeAlias = Union[tuple[int, "_LeafPattern"], tuple[None, None]]
 
 
 class _LeafPattern(_Pattern):
@@ -174,9 +174,9 @@ class _LeafPattern(_Pattern):
             return False, left, collected
         left_ = left[:pos] + left[(pos + 1) :]
         same_name = [a for a in collected if a.name == self.name]
-        if isinstance(self.value, int):
+        if type(self.value) is int:
             if same_name:
-                if isinstance(same_name[0].value, int):
+                if type(same_name[0].value) is int:
                     same_name[0].value += 1
                 return True, left_, collected
             else:

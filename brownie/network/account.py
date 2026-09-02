@@ -21,7 +21,7 @@ from eth_typing import BlockNumber, HexAddress
 from faster_eth_utils import keccak
 from faster_eth_utils.applicators import apply_formatters_to_dict
 from web3 import HTTPProvider, IPCProvider
-from web3.exceptions import InvalidTransaction, TransactionNotFound
+from web3.exceptions import InvalidTransaction, TransactionNotFound, Web3RPCError
 
 from brownie._c_constants import HexBytes, deque, ujson_dump, ujson_load
 from brownie._config import CONFIG, _get_data_folder
@@ -513,7 +513,7 @@ class _PrivateKeyAccount(PublicKeyAccount):
             # https://github.com/ethereum/go-ethereum/pull/23027
             skip_keys = {"gasPrice", "maxFeePerGas", "maxPriorityFeePerGas"}
             web3.eth.call({k: v for k, v in tx.items() if k not in skip_keys and v})
-        except ValueError as exc:
+        except (ValueError, Web3RPCError) as exc:
             exc = VirtualMachineError(exc)
             raise ValueError(
                 f"Execution reverted during call: '{exc.revert_msg}'. This transaction will likely "
@@ -649,10 +649,8 @@ class _PrivateKeyAccount(PublicKeyAccount):
             tx["gasPrice"] = web3.to_hex(gas_price)
         try:
             return web3.eth.estimate_gas(tx)
-        except ValueError as exc:
-            revert_gas_limit = CONFIG.active_network["settings"][
-                "reverting_tx_gas_limit"
-            ]  # @UndefinedVariable
+        except (ValueError, Web3RPCError) as exc:
+            revert_gas_limit = CONFIG.active_network["settings"]["reverting_tx_gas_limit"]
             if revert_gas_limit == "max":
                 revert_gas_limit = web3.eth.get_block("latest")["gasLimit"]
                 CONFIG.active_network["settings"]["reverting_tx_gas_limit"] = (
@@ -681,6 +679,7 @@ class _PrivateKeyAccount(PublicKeyAccount):
         required_confs: int = 1,
         allow_revert: bool = None,
         silent: bool = None,
+        skip_undo: bool = False,
         test_function: Optional[Callable[[], bool]] = None,
         max_retries: int = 5,
         **kwargs,
@@ -723,7 +722,7 @@ class _PrivateKeyAccount(PublicKeyAccount):
                 silent,
             )
 
-            if rpc.is_active():
+            if rpc.is_active() and not skip_undo:
                 undo_thread = threading.Thread(
                     target=Chain()._add_to_undo_buffer,
                     args=(
@@ -745,14 +744,14 @@ class _PrivateKeyAccount(PublicKeyAccount):
                 )
                 undo_thread.start()
 
-            receipt._raise_if_reverted(exc)
-            self.wait_for_complete(
-                receipt,
-                test_function=test_function,
-                max_retries=max_retries,
-                required_confs=required_confs,
-            )
-            return receipt
+                receipt._raise_if_reverted(exc)
+                self.wait_for_complete(
+                    receipt,
+                    test_function=test_function,
+                    max_retries=max_retries,
+                    required_confs=required_confs,
+                )
+                return receipt
         except Exception as ex:
             if max_retries <= 0 or test_function is None:
                 raise ex
@@ -933,7 +932,7 @@ class _PrivateKeyAccount(PublicKeyAccount):
                         txid = bytes_to_hexstring(response)
                         if not silent:
                             print(f"\rTransaction sent: {bright_blue}{txid}{color}")
-                except ValueError as e:
+                except (ValueError, Web3RPCError) as e:
                     if txid is None:
                         exc = VirtualMachineError(e)
                         if exc.message == "replacement transaction underpriced":
@@ -1142,7 +1141,7 @@ class LocalAccount(_PrivateKeyAccount):
         """
         msg_hash_bytes = defunct_hash_message(text=message)
         eth_private_key = eth_keys.keys.PrivateKey(HexBytes(self.private_key))
-        (v, r, s, eth_signature_bytes) = sign_message_hash(eth_private_key, msg_hash_bytes)
+        v, r, s, eth_signature_bytes = sign_message_hash(eth_private_key, msg_hash_bytes)
         if ETH_ACCOUNT_LT_0_13_0:
             return SignedMessage(
                 messageHash=msg_hash_bytes,
@@ -1175,7 +1174,7 @@ class LocalAccount(_PrivateKeyAccount):
         msg_hash_bytes = HexBytes(_hash_eip191_message(message.signable_message))
         assert len(msg_hash_bytes) == 32, "The message hash must be exactly 32-bytes"
         eth_private_key = eth_keys.keys.PrivateKey(HexBytes(self.private_key))
-        (v, r, s, eth_signature_bytes) = sign_message_hash(eth_private_key, msg_hash_bytes)
+        v, r, s, eth_signature_bytes = sign_message_hash(eth_private_key, msg_hash_bytes)
         if ETH_ACCOUNT_LT_0_13_0:
             return SignedMessage(
                 messageHash=msg_hash_bytes,
@@ -1224,11 +1223,12 @@ class ClefAccount(_PrivateKeyAccount):
         if not allow_revert:
             self._check_for_revert(tx)
 
+        to_hex = web3.to_hex
         formatters = {
-            "nonce": web3.to_hex,
-            "value": web3.to_hex,
-            "chainId": web3.to_hex,
-            "data": web3.to_hex,
+            "nonce": to_hex,
+            "value": to_hex,
+            "chainId": to_hex,
+            "data": to_hex,
             "from": to_address,
         }
         if "to" in tx:
@@ -1250,13 +1250,12 @@ def _apply_fee_to_tx(
     priority_fee: int | None = None,
 ) -> dict:
     tx = tx.copy()
+    to_hex = web3.to_hex
 
     if gas_price is not None:
         if max_fee or priority_fee:
-            raise ValueError(
-                "gas_price and (max_fee, priority_fee) are mutually exclusive"
-            )
-        tx["gasPrice"] = web3.to_hex(gas_price)
+            raise ValueError("gas_price and (max_fee, priority_fee) are mutually exclusive")
+        tx["gasPrice"] = to_hex(gas_price)
         return tx
 
     if priority_fee is None:
@@ -1277,7 +1276,7 @@ def _apply_fee_to_tx(
     if max_fee < base_fee + priority_fee:
         raise TransactionError("The gas is too damn high")
 
-    tx["maxFeePerGas"] = web3.to_hex(max_fee)
-    tx["maxPriorityFeePerGas"] = web3.to_hex(priority_fee)
-    tx["type"] = web3.to_hex(2)
+    tx["maxFeePerGas"] = to_hex(max_fee)
+    tx["maxPriorityFeePerGas"] = to_hex(priority_fee)
+    tx["type"] = to_hex(2)
     return tx

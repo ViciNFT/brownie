@@ -1,10 +1,9 @@
 #!/usr/bin/python3
 
 import pytest
-from web3 import HTTPProvider, IPCProvider, Web3, WebsocketProvider
+from web3 import HTTPProvider, IPCProvider, LegacyWebSocketProvider, Web3
 
 from brownie.exceptions import MainnetUndefined
-from tests.conftest import _connect_to_mainnet
 
 
 def test_connect_http(web3):
@@ -27,7 +26,7 @@ def test_connect_ipc(web3, testdir):
 
 def test_connect_ws(web3):
     web3.connect("ws://localhost")
-    assert type(web3.provider) is WebsocketProvider
+    assert type(web3.provider) is LegacyWebSocketProvider
     web3.disconnect()
 
 
@@ -41,20 +40,22 @@ def test_bad_env_var(web3):
         web3.connect("https://$POTATO")
 
 
-def test_mainnet(config, network, web3):
-    assert type(web3._mainnet) == Web3
-    assert web3._mainnet != web3
-    _connect_to_mainnet(network)
+def test_mainnet(config, web3, monkeypatch):
+    active_network = config._active_network
+    monkeypatch.setattr(web3, "_mainnet_w3", None)
 
-    assert web3._mainnet == web3
+    mainnet = web3._mainnet
+    assert type(mainnet) == Web3
+    assert mainnet is not web3
+    assert web3._mainnet is mainnet
 
-    try:
-        network.disconnect()
-    except ConnectionError as e:
-        # This happens in the test runners sometimes, we're not too concerned with why or how to fix.
-        # It's probably just a silly race condition due to parallel testing.
-        if str(e) != "Not connected to any network":
-            raise
+    with monkeypatch.context() as active_mainnet:
+        try:
+            config.set_active_network("mainnet")
+            active_mainnet.setattr(web3, "is_connected", lambda: True)
+            assert web3._mainnet is web3
+        finally:
+            config._active_network = active_network
 
     del config.networks["mainnet"]
     with pytest.raises(MainnetUndefined):

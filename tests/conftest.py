@@ -13,6 +13,7 @@ from typing import Any
 import eth_retry
 import pytest
 import solcx
+import yaml
 from _pytest.monkeypatch import MonkeyPatch
 from prompt_toolkit.input.defaults import create_pipe_input
 
@@ -26,6 +27,11 @@ TARGET_OPTS = {
     "evm": "evmtester",
     "pm": "package_test",
     "plugin": "plugintester",
+}
+BACKEND_BY_NETWORK = {
+    "development": "anvil",
+    "ganache-cli": "ganache",
+    "hardhat": "hardhat",
 }
 _dev_network = "development"
 
@@ -45,8 +51,20 @@ def pytest_addoption(parser):
     )
     parser.addoption(
         "--network",
-        choices=["development", "hardhat"],
+        choices=["development", "ganache-cli", "hardhat"],
         default="development",
+    )
+    parser.addoption(
+        "--backend",
+        choices=["auto", "anvil", "ganache", "hardhat"],
+        default="auto",
+        help="Select backend-specific tests; defaults to the active development network.",
+    )
+    parser.addoption(
+        "--live-explorer",
+        action="store_true",
+        default=False,
+        help="Run tests that call live block explorer APIs.",
     )
 
 
@@ -71,8 +89,36 @@ def pytest_collection_modifyitems(config, items):
         for test in [i for i in items if not fixtures.intersection(i.fixturenames)]:
             items.remove(test)
 
+    backend = _get_backend(config)
+    for test in list(items):
+        backend_marker = test.get_closest_marker("backend")
+        if backend_marker is not None and backend not in backend_marker.args:
+            items.remove(test)
+
+    if not config.getoption("--live-explorer"):
+        skip_live_explorer = pytest.mark.skip(reason="requires --live-explorer")
+        for test in items:
+            if test.get_closest_marker("live_explorer"):
+                test.add_marker(skip_live_explorer)
+
+
+def _get_backend(config):
+    backend = config.getoption("--backend")
+    if backend != "auto":
+        return backend
+    return BACKEND_BY_NETWORK[config.getoption("--network")]
+
 
 def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "backend(name): mark a test as requiring a specific development RPC backend",
+    )
+    config.addinivalue_line(
+        "markers",
+        "live_explorer: mark a test as requiring live block explorer API access",
+    )
+
     if config.getoption("--target") == "plugin" and config.getoption("numprocesses"):
         raise pytest.UsageError("Cannot use xdist with plugin tests, try adding the '-n 0' flag")
 
@@ -108,9 +154,9 @@ def xdist_id(worker_id):
     return int(worker_id.lstrip("gw"))
 
 
-# ensure a clean data folder, and set unique ganache ports for each xdist worker
+# ensure a clean data folder, and set unique RPC ports for each xdist worker
 @pytest.fixture(scope="session", autouse=True)
-def _base_config(tmp_path_factory, xdist_id, network_name):
+def _base_config(tmp_path_factory, xdist_id, network_name, pytestconfig):
     brownie._config.DATA_FOLDER = tmp_path_factory.mktemp(f"data-{xdist_id}")
     brownie._config._make_data_folders(brownie._config.DATA_FOLDER)
 
@@ -122,6 +168,8 @@ def _base_config(tmp_path_factory, xdist_id, network_name):
     if xdist_id:
         port = 8545 + xdist_id
         brownie._config.CONFIG.networks[network_name]["cmd_settings"]["port"] = port
+    if pytestconfig.getoption("--evm") or pytestconfig.getoption("--target") == "plugin":
+        brownie._config.CONFIG.networks[network_name]["cmd_settings"]["steps_tracing"] = True
 
 
 @pytest.fixture(scope="session")
@@ -217,8 +265,10 @@ def evmtester(_project_factory, project, tmp_path, accounts, request):
         tmp_path.joinpath("contracts/EVMTester.sol"),
     )
     conf_json = {
-        "evm_version": evm_version,
-        "compiler": {"solc": {"version": str(solc_version), "optimize": runs > 0, "runs": runs}},
+        "compiler": {
+            "evm_version": evm_version,
+            "solc": {"version": str(solc_version), "optimize": runs > 0, "runs": runs},
+        },
     }
     with tmp_path.joinpath("brownie-config.yaml").open("w") as fp:
         json.dump(conf_json, fp)
@@ -231,14 +281,14 @@ def plugintesterbase(project, testdir, monkeypatch, network_name):
     brownie.test.coverage.clear()
     brownie.network.connect(network_name)
     monkeypatch.setattr("brownie.network.connect", lambda k: None)
-    testdir.plugins.extend(["pytest-brownie", "pytest-cov"])
+    testdir.plugins.extend(["pytest-brownie", "pytest_cov"])
     yield testdir
     _disconnect_network()
 
 
 # setup for pytest-brownie plugin testing
 @pytest.fixture
-def plugintester(_project_factory, plugintesterbase, request):
+def plugintester(_project_factory, plugintesterbase, request, network_name):
     _copy_all(_project_factory, plugintesterbase.tmpdir)
     test_source = getattr(request.module, "test_source", None)
     if test_source is not None:
@@ -246,7 +296,59 @@ def plugintester(_project_factory, plugintesterbase, request):
             test_source = [test_source]
         test_source = {f"tests/test_{i}.py": test_source[i] for i in range(len(test_source))}
         plugintesterbase.makepyfile(**test_source)
+    for name in ("runpytest", "runpytest_inprocess", "runpytest_subprocess"):
+        runner = getattr(plugintesterbase, name)
+
+        def synced_runner(*args, runner=runner, **kwargs):
+            _sync_plugin_data_folder(plugintesterbase.tmpdir, network_name)
+            child_home = str(plugintesterbase.tmpdir)
+            child_data_folder = Path(plugintesterbase.tmpdir).joinpath(".brownie")
+            original_data_folder = brownie._config.DATA_FOLDER
+            original_home = os.environ.get("HOME")
+            if not any(
+                arg == "--brownie-project" or str(arg).startswith("--brownie-project=")
+                for arg in args
+            ):
+                args = ("--brownie-project", str(plugintesterbase.tmpdir), *args)
+            brownie._config.DATA_FOLDER = child_data_folder
+            os.environ["HOME"] = child_home
+            try:
+                return runner(*args, **kwargs)
+            finally:
+                brownie._config.DATA_FOLDER = original_data_folder
+                if original_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = original_home
+
+        setattr(plugintesterbase, name, synced_runner)
     yield plugintesterbase
+
+
+def _sync_plugin_data_folder(path, network_id):
+    data_folder = Path(path).joinpath(".brownie")
+    brownie._config._make_data_folders(data_folder)
+    parent_packages = brownie._config._get_data_folder().joinpath("packages")
+    child_packages = data_folder.joinpath("packages")
+    if parent_packages.exists():
+        if child_packages.exists():
+            shutil.rmtree(child_packages)
+        shutil.copytree(parent_packages, child_packages)
+    network_config_path = data_folder.joinpath("network-config.yaml")
+    network_settings = deepcopy(brownie._config.CONFIG.networks[network_id])
+
+    with network_config_path.open() as fp:
+        network_config = yaml.safe_load(fp)
+
+    for networks in network_config.values():
+        if not isinstance(networks, list):
+            continue
+        for network in networks:
+            if network.get("id") == network_id:
+                network.update(network_settings)
+
+    with network_config_path.open("w") as fp:
+        yaml.safe_dump(network_config, fp)
 
 
 _devnetwork_lock = threading.Lock()
@@ -447,7 +549,8 @@ def _load_project(project, path: Path, name: str, **kwargs: Any):
 
 def _connect_to_mainnet(network) -> None:
     # This recursive helper helps us with a race condition.
-    # Usually the first call of this func will work fine, but in edge cases we need to call it more than once to make all of the tests succeed.
+    # Usually the first call of this func will work fine, but in edge cases we need to call
+    # it more than once to make all of the tests succeed.
     try:
         network.connect("mainnet")
     except ConnectionError:
@@ -456,9 +559,15 @@ def _connect_to_mainnet(network) -> None:
 
 
 def _disconnect_network() -> None:
+    config = brownie._config.CONFIG
+    web3 = brownie.network.web3
+
     try:
         brownie.network.disconnect(False)
-    except ConnectionError:
-        # this happens in the test runners sometimes, most likely
-        # from a race condition we see no reason to debug
-        pass
+    except ConnectionError as exc:
+        if str(exc) != "Not connected to any network":
+            raise
+    finally:
+        if web3.provider is not None or config._active_network is not None:
+            web3.disconnect()
+            config.clear_active()

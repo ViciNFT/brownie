@@ -48,7 +48,7 @@ _marker = deque("-/|\\-/|\\")
 
 
 def trace_property(fn: Callable[["TransactionReceipt"], _T]) -> "property[_T]":
-    # attributes that are only available after querying the tranasaction trace
+    # attributes that are only available after querying the transaction trace
 
     @property
     def wrapper(self: "TransactionReceipt") -> _T:
@@ -490,16 +490,19 @@ class TransactionReceipt:
             block_number = block_number or self.block_number
             nonce_time = 0.0
             sender_nonce = 0
+            eth = web3.eth
+            stdout_write = sys.stdout.write
+            stdout_flush = sys.stdout.flush
             while True:
                 # every 15 seconds, check if the nonce increased without a confirmation of
                 # this specific transaction. if this happens, the tx has likely dropped
                 # and we should stop waiting.
                 if time.time() - nonce_time > 15:
-                    sender_nonce = web3.eth.get_transaction_count(str(self.sender))
+                    sender_nonce = eth.get_transaction_count(str(self.sender))
                     nonce_time = time.time()
     
                 try:
-                    receipt = web3.eth.get_transaction_receipt(HexBytes(self.txid))
+                    receipt = eth.get_transaction_receipt(HexBytes(self.txid))
                 except TransactionNotFound:
                     receipt = None
                 except Exception as ex:
@@ -524,14 +527,14 @@ class TransactionReceipt:
     
                 if not block_number and not self._silent and required_confs > 0:
                     if required_confs == 1:
-                        sys.stdout.write(f"  Waiting for confirmation... {_marker[0]}\r")
+                        stdout_write(f"  Waiting for confirmation... {_marker[0]}\r")
                     else:
-                        sys.stdout.write(
+                        stdout_write(
                             f"  Required confirmations: {bright_yellow}0/"
                             f"{required_confs}{color}   {_marker[0]}\r"
                         )
                     _marker.rotate(1)
-                    sys.stdout.flush()
+                    stdout_flush()
     
                 time.sleep(1)
     
@@ -546,14 +549,14 @@ class TransactionReceipt:
             remaining_confs = required_confs
             while remaining_confs > 0 and required_confs > 1:
                 try:
-                    receipt = web3.eth.get_transaction_receipt(self.txid)
+                    receipt = eth.get_transaction_receipt(self.txid)
                     self.block_number = receipt["blockNumber"]
                 except TransactionNotFound:
                     if not self._silent:
-                        sys.stdout.write(f"\r{red}Transaction was lost...{color}{' ' * 8}")
-                        sys.stdout.flush()
+                        stdout_write(f"\r{red}Transaction was lost...{color}{' ' * 8}")
+                        stdout_flush()
                     # check if tx is still in mempool, this will raise otherwise
-                    tx = web3.eth.get_transaction(self.txid)
+                    tx = eth.get_transaction(self.txid)
                     self.block_number = None
                     return self._await_confirmation(tx.get("blockNumber"), required_confs)
                 except Exception as ex:
@@ -566,30 +569,31 @@ class TransactionReceipt:
                 if required_confs - self.confirmations != remaining_confs:
                     remaining_confs = required_confs - self.confirmations
                     if not self._silent:
-                        sys.stdout.write(f"\rRequired confirmations: {bright_yellow}{self.confirmations}/{required_confs}{color}  ")
+                        stdout_write(f"\rRequired confirmations: {bright_yellow}{self.confirmations}/{required_confs}{color}  ")
                         if remaining_confs == 0:
-                            sys.stdout.write("\n")
-                        sys.stdout.flush()
+                            stdout_write("\n")
+                        stdout_flush()
                 if remaining_confs > 0:
                     time.sleep(1)
     
             self._set_from_receipt(receipt)
+            try:
             # if coverage evaluation is active, evaluate the trace
-            if (
-                CONFIG.argv["coverage"]
-                and not coverage._check_cached(self.coverage_hash)
-                and self.trace
-            ):
-                self._expand_trace()
-            if not self._silent and required_confs > 0:
-                print(self._confirm_output())
-    
-            # set the confirmation event and mark other tx's with the same nonce as dropped
-            for dropped_tx in state.TxHistory().filter(
-                sender=self.sender, nonce=self.nonce, key=lambda k: k != self
-            ):
-                dropped_tx.status = Status(-2)
-                dropped_tx._confirmed.set()
+                if (
+                    CONFIG.argv["coverage"]
+                    and not coverage._check_cached(self.coverage_hash)
+                    and self.trace
+                ):
+                    self._expand_trace()
+                if not self._silent and required_confs > 0:
+                    print(self._confirm_output())
+            finally:
+                # set the confirmation event and mark other tx's with the same nonce as dropped
+                for dropped_tx in state.TxHistory().filter(
+                    sender=self.sender, nonce=self.nonce, key=lambda k: k != self
+                ):
+                    dropped_tx.status = Status(-2)
+                    dropped_tx._confirmed.set()
         finally:
             self._confirmed.set()
 
@@ -705,7 +709,18 @@ class TransactionReceipt:
         ):
             return
         
-        self._raw_trace = trace = trace["result"]["structLogs"]
+        result = trace["result"]
+        return_value = result.get("returnValue")
+        # Anvil exposes tx return/revert data directly as `returnValue`.
+        # Ganache still relies on decoding the final RETURN/REVERT step below,
+        # so keep the direct RPC path and the structLogs fallback.
+        if return_value not in (None, "", "0x"):
+            if self.status:
+                self._confirmed_return_value(return_value)
+            else:
+                self._reverted_return_value(return_value)
+
+        self._raw_trace = trace = result["structLogs"]
         if not trace:
             self._modified_state = False
             return
@@ -764,6 +779,29 @@ class TransactionReceipt:
                 return
             self._return_value = fn.decode_output(data)
 
+    def _format_return_value(self, return_value: str) -> str:
+        return return_value if return_value.startswith("0x") else f"0x{return_value}"
+
+    def _confirmed_return_value(self, return_value: str) -> None:
+        if self.contract_address:
+            return
+        contract = state._find_contract(self.receiver)
+        if not contract:
+            return
+        fn = contract.get_method_object(self.input)
+        if not fn:
+            return
+        self._return_value = fn.decode_output(self._format_return_value(return_value))
+
+    def _reverted_return_value(self, return_value: str) -> None:
+        self._revert_msg = decode_typed_error(self._format_return_value(return_value))
+        if (
+            self._dev_revert_msg is None
+            and self._revert_msg
+            and self._revert_msg.startswith("dev:")
+        ):
+            self._dev_revert_msg = self._revert_msg
+
     def _reverted_trace(self, trace: Sequence) -> None:
         self._modified_state = False
         if self.contract_address:
@@ -790,7 +828,9 @@ class TransactionReceipt:
             dev_revert = build._get_dev_revert(step["pc"]) or None
             if dev_revert is not None:
                 self._dev_revert_msg = dev_revert
-                if self._revert_msg is None:
+                # User revert data and dev comments can arrive from different
+                # sources. Preserve a decoded user-facing reason when present.
+                if self._revert_msg in (None, ""):
                     self._revert_msg = dev_revert
             else:
                 # if none is found, expand the trace and get it from the pcMap
@@ -801,8 +841,12 @@ class TransactionReceipt:
                     # if this is the function selector revert, check for a jump
                     if "first_revert" in pc_map[step["pc"]]:
                         idx = trace.index(step) - 4
-                        if trace[idx]["pc"] != step["pc"] - 4:
-                            step = trace[idx]
+                        jump_step = trace[idx]
+                        # Some optimized traces jump through no-source steps;
+                        # keep the original sourced revert when the jump cannot
+                        # help us recover a dev comment.
+                        if jump_step["pc"] != step["pc"] - 4 and jump_step["source"]:
+                            step = jump_step
 
                     # if this is the optimizer revert, find the actual source
                     if "optimizer_revert" in pc_map[step["pc"]]:
@@ -833,14 +877,32 @@ class TransactionReceipt:
                         # of building a dev revert map should be refactored out in favor
                         # of this one.
                         source = contract._sources.get(step["source"]["filename"])
-                        offset = step["source"]["offset"][1]
-                        line = source[offset:].split("\n")[0]
                         marker = "//" if contract._build["language"] == "Solidity" else "#"
-                        revert_str = line[line.index(marker) + len(marker) :].strip()
-                        if revert_str.startswith("dev:"):
-                            self._dev_revert_msg = revert_str
+                        # Modern solc can map a revert to a broad function
+                        # range rather than the exact comment offset, so scan
+                        # the resolved source span for a trailing dev comment.
+                        start, stop = self._source_range_for_dev_revert(contract, step)
+                        line = source[stop:].split("\n")[0]
+                        if marker not in line:
+                            line = next(
+                                (
+                                    i
+                                    for i in reversed(source[start:stop].splitlines())
+                                    if marker in i
+                                ),
+                                "",
+                            )
+                        if marker in line:
+                            revert_str = line[line.index(marker) + len(marker) :].strip()
+                            if revert_str.startswith("dev:"):
+                                self._dev_revert_msg = revert_str
 
-                    if self._revert_msg is None:
+                    if self._dev_revert_msg is None:
+                        # Last fallback for trace/source shapes where pcMap and
+                        # source ranges miss the comment but traceback text has it.
+                        self._dev_revert_msg = self._dev_revert_from_traceback(contract)
+
+                    if self._revert_msg in (None, ""):
                         self._revert_msg = self._dev_revert_msg or ""
                     return
                 except (KeyError, AttributeError, TypeError, ValueError):
@@ -853,6 +915,39 @@ class TransactionReceipt:
 
         op = next((i["op"] for i in trace[::-1] if i["op"] in ("REVERT", "INVALID")), None)
         self._revert_msg = "invalid opcode" if op == "INVALID" else ""
+
+    def _source_range_for_dev_revert(self, contract: Any, step: dict) -> tuple[int, int]:
+        start, stop = step["source"]["offset"]
+        fn = step.get("fn")
+        if contract._build["language"] != "Solidity" or not fn:
+            return start, stop
+
+        fn_name = fn.rsplit(".", maxsplit=1)[-1]
+
+        def iter_nodes(node: dict | list) -> Any:
+            if isinstance(node, dict):
+                yield node
+                for value in node.values():
+                    yield from iter_nodes(value)
+            elif isinstance(node, list):
+                for value in node:
+                    yield from iter_nodes(value)
+
+        for node in iter_nodes(contract._build["ast"]):
+            if node.get("nodeType") != "FunctionDefinition" or node.get("name") != fn_name:
+                continue
+            fn_start, fn_length, *_ = tuple(map(int, node["src"].split(":")))
+            fn_stop = fn_start + fn_length
+            if start <= fn_start and fn_stop <= stop:
+                return fn_start, fn_stop
+        return start, stop
+
+    def _dev_revert_from_traceback(self, contract: Any) -> str | None:
+        marker = "//" if contract._build["language"] == "Solidity" else "#"
+        line = self._traceback_string().split("\n")[-1]
+        if f"{marker} dev: " in line:
+            return line[line.index(marker) + len(marker) : -5].strip()
+        return None
 
     def _expand_trace(self) -> None:
         """Adds the following attributes to each step of the stack trace:
@@ -876,7 +971,7 @@ class TransactionReceipt:
         self._trace = trace = self._raw_trace
         self._new_contracts = []
         self._internal_transfers = []
-        self._subcalls = []
+        subcalls = self._subcalls = []
         if self.contract_address or not trace:
             coverage._add_transaction(self.coverage_hash, {})
             return
@@ -923,7 +1018,7 @@ class TransactionReceipt:
                     stack_idx = -4 if step["op"] in ("CALL", "CALLCODE") else -3
                     offset = int(step["stack"][stack_idx], 16)
                     length = int(step["stack"][stack_idx - 1], 16)
-                    calldata = HexBytes("".join(step["memory"]))[offset : offset + length]
+                    calldata = HexBytes(_join_memory(step["memory"]))[offset : offset + length]
                     sig = hexbytes_to_hexstring(calldata[:4])
                     address = step["stack"][-2][-40:]
 
@@ -931,26 +1026,26 @@ class TransactionReceipt:
                     last_map[trace[i]["depth"]] = _get_last_map(address, sig)
                     coverage_eval.setdefault(last_map[trace[i]["depth"]]["name"], {})
 
-                self._subcalls.append(
+                subcalls.append(
                     {"from": step["address"], "to": EthAddress(address), "op": step["op"]}
                 )
                 if step["op"] in ("CALL", "CALLCODE"):
-                    self._subcalls[-1]["value"] = int(step["stack"][-3], 16)
+                    subcalls[-1]["value"] = int(step["stack"][-3], 16)
                 if is_depth_increase and calldata and last_map[trace[i]["depth"]].get("function"):
                     fn = last_map[trace[i]["depth"]]["function"]
-                    self._subcalls[-1]["function"] = fn._input_sig
+                    subcalls[-1]["function"] = fn._input_sig
                     try:
                         zip_ = zip(fn.abi["inputs"], fn.decode_input(calldata))
                         inputs = {i[0]["name"]: i[1] for i in zip_}
-                        self._subcalls[-1]["inputs"] = inputs
+                        subcalls[-1]["inputs"] = inputs
                     except Exception:
-                        self._subcalls[-1]["calldata"] = hexbytes_to_hexstring(calldata)
+                        subcalls[-1]["calldata"] = hexbytes_to_hexstring(calldata)
                 elif calldata or is_subcall:
-                    self._subcalls[-1]["calldata"] = hexbytes_to_hexstring(calldata)
+                    subcalls[-1]["calldata"] = hexbytes_to_hexstring(calldata)
 
-                if precompile_contract.search(str(self._subcalls[-1]["from"])) is not None:
-                    caller = self._subcalls.pop(-2)["from"]
-                    self._subcalls[-1]["from"] = caller
+                if precompile_contract.search(str(subcalls[-1]["from"])) is not None:
+                    caller = subcalls.pop(-2)["from"]
+                    subcalls[-1]["from"] = caller
 
             # update trace from last_map
             last = last_map[trace[i]["depth"]]
@@ -973,7 +1068,7 @@ class TransactionReceipt:
             # If the function signature is available this will be overridden by setting
             # `return_value` a few lines below.
             if trace[i]["depth"] and opcode == "RETURN":
-                subcall: dict = next(i for i in self._subcalls[::-1] if i["to"] == last["address"])
+                subcall: dict = next(i for i in subcalls[::-1] if i["to"] == last["address"])
 
                 if opcode == "RETURN":
                     returndata = _get_memory(trace[i], -1)
@@ -987,7 +1082,7 @@ class TransactionReceipt:
                 continue
 
             if trace[i]["depth"] and opcode in ("RETURN", "REVERT", "INVALID", "SELFDESTRUCT"):
-                subcall: dict = next(i for i in self._subcalls[::-1] if i["to"] == last["address"])
+                subcall: dict = next(i for i in subcalls[::-1] if i["to"] == last["address"])
 
                 if opcode == "RETURN":
                     returndata = _get_memory(trace[i], -1)
@@ -1432,32 +1527,31 @@ def _step_external(
         return key
 
     result: list = [key, f"address: {step['address']}"]
+    append = result.append
 
     if "value" in subcall:
-        result.append(f"value: {subcall['value']}")
+        append(f"value: {subcall['value']}")
 
     if "inputs" not in subcall:
-        result.append(f"calldata: {subcall.get('calldata')}")
+        append(f"calldata: {subcall.get('calldata')}")
     elif subcall["inputs"]:
-        result.append(
-            ["input arguments:", *(f"{k}: {_format(v)}" for k, v in subcall["inputs"].items())]
-        )
+        append(["input arguments:", *(f"{k}: {_format(v)}" for k, v in subcall["inputs"].items())])
     else:
-        result.append("input arguments: None")
+        append("input arguments: None")
 
     if "return_value" in subcall:
         value = subcall["return_value"]
         if isinstance(value, tuple) and len(value) > 1:
-            result.append(["return values:", *(_format(i) for i in value)])
+            append(["return values:", *(_format(i) for i in value)])
         else:
             if isinstance(value, tuple):
                 value = value[0]
-            result.append(f"return value: {_format(value)}")
+            append(f"return value: {_format(value)}")
     elif "returndata" in subcall:
-        result.append(f"returndata: {subcall['returndata']}")
+        append(f"returndata: {subcall['returndata']}")
 
     if "revert_msg" in subcall:
-        result.append(f"revert reason: {bright_red}{subcall['revert_msg']}{color}")
+        append(f"revert reason: {bright_red}{subcall['revert_msg']}{color}")
 
     return build_tree([result], multiline_pad=0).rstrip()
 
@@ -1465,10 +1559,14 @@ def _step_external(
 def _get_memory(step: dict, idx: int) -> HexBytes:
     offset = int(step["stack"][idx], 16)
     length = int(step["stack"][idx - 1], 16)
-    data = HexBytes("".join(step["memory"]))[offset : offset + length]
+    data = HexBytes(_join_memory(step["memory"]))[offset : offset + length]
     # append zero-bytes if allocated memory ends before `length` bytes
     data = HexBytes(data + b"\x00" * (length - len(data)))
     return data
+
+
+def _join_memory(memory: list) -> str:
+    return "".join(i.removeprefix("0x").zfill(64) for i in memory)
 
 
 def _get_last_map(address: EthAddress, sig: str) -> dict:

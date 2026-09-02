@@ -1,9 +1,9 @@
 #!/usr/bin/python3
 
-from collections.abc import Sequence
-from typing import Any, Final, cast
+from collections.abc import Iterator, Sequence
+from typing import Any, Final, TypeAlias, cast
 
-from eth_event.main import DecodedEvent, NonDecodedEvent
+from eth_event.main import DecodedEvent, EventData, NonDecodedEvent
 from eth_typing import ABIComponent, ABIFunction
 from faster_eth_abi.grammar import ABIType, TupleType, parse
 
@@ -13,7 +13,7 @@ from brownie.convert.datatypes import EthAddress, HexString, ReturnValue
 from brownie.convert.main import to_bool, to_decimal, to_int, to_string, to_uint
 from brownie.convert.utils import get_type_strings
 
-AnyListOrTuple = list[Any] | tuple[Any, ...]
+AnyListOrTuple: TypeAlias = list[Any] | tuple[Any, ...]
 
 # Internal C constants
 
@@ -44,17 +44,15 @@ def format_output(abi: ABIFunction, outputs: AnyListOrTuple) -> ReturnValue:
 
 def format_event(event: DecodedEvent | NonDecodedEvent) -> FormattedEvent:
     """Format event data based on ABI types."""
-    if not event["decoded"]:
-        topics = (
-            {"type": "bytes32", "name": name, "value": data}
-            for name, data in zip(("topic1", "topic2", "topic3"), event.get("topics", ()))
-        )
-        event["data"] = [  # type: ignore [typeddict-item]
-            *topics,
-            {"type": "bytes", "name": "data", "value": _format_single("bytes", event["data"])},
+    if event["decoded"] is False:
+        data = _format_single("bytes", event["data"])
+        formatted_event = cast(FormattedEvent, event)
+        formatted_event["data"] = [
+            *_iter_event_topics(event),
+            {"type": "bytes", "name": "data", "value": data},
         ]
-        event["name"] = "(anonymous)" if "anonymous" in event else "(unknown)"  # type: ignore [typeddict-item]
-        return event  # type: ignore [return-value]
+        formatted_event["name"] = "(anonymous)" if "anonymous" in event else "(unknown)"
+        return formatted_event
 
     data = event["data"]
     for e in data:
@@ -135,3 +133,8 @@ def _get_abi_types(abi_params: Sequence[ABIComponent]) -> Sequence[ABIType]:
     type_str = f"({','.join(get_type_strings(abi_params))})"
     tuple_type = cast(TupleType, _parse(type_str))
     return tuple_type.components
+
+
+def _iter_event_topics(event: NonDecodedEvent) -> Iterator[EventData]:
+    for name, topic in zip(("topic1", "topic2", "topic3"), event.get("topics", ())):
+        yield cast(EventData, {"type": "bytes32", "name": name, "value": topic})

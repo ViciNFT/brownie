@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import shutil
 import sys
 import warnings
 from subprocess import DEVNULL, PIPE
@@ -25,6 +26,7 @@ CLI_FLAGS = {
     "base_fee": "--block-base-fee-per-gas",
     "gas_price": "--gas-price",
     "gas_limit": "--gas-limit",
+    "steps_tracing": "--steps-tracing",
 }
 
 
@@ -33,15 +35,24 @@ def launch(cmd: str, **kwargs: Any) -> None:
 
     Args:
         cmd: command string to execute as subprocess"""
-    if sys.platform == "win32" and not cmd.split(" ")[0].endswith(".cmd"):
-        if " " in cmd:
-            cmd = cmd.replace(" ", ".cmd ", 1)
-        else:
-            cmd += ".cmd"
     cmd_list = cmd.split(" ")
-    for key, value in [(k, v) for k, v in kwargs.items() if v]:
+    if sys.platform == "win32":
+        executable = cmd_list[0]
+        resolved = shutil.which(executable)
+        if resolved is not None:
+            cmd_list[0] = resolved
+        elif not executable.endswith(".cmd"):
+            cmd_list[0] = f"{executable}.cmd"
+
+    cmd_list.append("--quiet")
+    for key, value in kwargs.items():
+        if value is None or value is False:
+            continue
         try:
-            cmd_list.extend([CLI_FLAGS[key], str(value)])
+            if value is True:
+                cmd_list.append(CLI_FLAGS[key])
+            else:
+                cmd_list.extend([CLI_FLAGS[key], str(value)])
         except KeyError:
             warnings.warn(
                 f"Ignoring invalid commandline setting for anvil: "
