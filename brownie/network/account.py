@@ -680,7 +680,7 @@ class _PrivateKeyAccount(PublicKeyAccount):
         allow_revert: bool = None,
         silent: bool = None,
         skip_undo: bool = False,
-        test_function: Optional[Callable[[], bool]] = None,
+        test_function: Callable[[], bool] | None = None,
         max_retries: int = 5,
         **kwargs,
     ) -> TransactionReceipt:
