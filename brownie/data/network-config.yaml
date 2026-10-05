@@ -175,7 +175,7 @@ live:
       - name: Mainnet
         chainid: 10
         id: optimism-main
-        host:  https://optimism-mainnet.infura.io/v3/$WEB3_INFURA_PROJECT_ID
+        host: https://optimism-mainnet.infura.io/v3/$WEB3_INFURA_PROJECT_ID
         explorer: https://api-optimistic.etherscan.io/api
         multicall2: "0x2DC0E2aa608532Da689e89e237dF582B783E552C"
       - name: Goerli
@@ -224,10 +224,29 @@ live:
         host: https://mainnet.base.org
         id: base-main
         name: Base mainnet
-
-
+  - name: BattleChain
+    networks:
+      - chainid: 626
+        explorer: https://block-explorer-api.battlechain.com/api
+        host: https://mainnet.battlechain.com
+        id: battlechain-main
+        name: BattleChain Mainnet
+      - chainid: 627
+        explorer: https://block-explorer-api.testnet.battlechain.com/api
+        host: https://testnet.battlechain.com
+        id: battlechain-test
+        name: BattleChain Testnet
 
 development:
+  - name: Anvil
+    id: development
+    cmd: anvil
+    host: http://127.0.0.1
+    cmd_settings:
+      port: 8545
+      gas_limit: 12000000
+      accounts: 10
+      base_fee: 0
   - name: Anvil
     id: anvil
     cmd: anvil
@@ -242,7 +261,7 @@ development:
       fork: mainnet
       port: 8545
   - name: Ganache-CLI
-    id: development
+    id: ganache-cli
     cmd: ganache-cli
     host: http://127.0.0.1
     cmd_settings:

@@ -1,20 +1,16 @@
 #!/usr/bin/python3
+# sourcery skip: merge-list-appends-into-extend
 import os
 import platform
 import sys
 
-from setuptools import find_packages, setup
+from setuptools import find_namespace_packages, setup
 
 with open("README.md") as fh:
     long_description = fh.read()
 
 if os.environ.get("BROWNIE_LIB", "0") == "1":
-    if sys.platform == "windows":
-        requirements_filename = "requirements-windows.in"
-    else:
-        requirements_filename = "requirements.in"
-elif sys.platform == "windows":
-    requirements_filename = "requirements-windows.txt"
+    requirements_filename = "requirements.in"
 else:
     requirements_filename = "requirements.txt"
 
@@ -39,6 +35,17 @@ else:
 if skip_mypyc:
     ext_modules = []
 else:
+    flags = [
+        # "--strict",
+        "--pretty",
+        "--check-untyped-defs",
+    ]
+
+    if sys.version_info[:2] == (3, 10):
+        # We only want to enable these flags on the lowest supported Python version
+        flags.append("--enable-error-code=unused-ignore")
+        flags.append("--enable-error-code=redundant-cast")
+
     ext_modules = mypycify(
         [
             "brownie/_c_constants.py",
@@ -67,9 +74,7 @@ else:
             "brownie/utils/output.py",
             "brownie/utils/sql.py",
             "brownie/utils/toposort.py",
-            # "--strict",
-            "--pretty",
-            "--check-untyped-defs",
+            *flags,
         ],
         group_name="eth_brownie",
         strict_dunder_typing=True,
@@ -78,8 +83,11 @@ else:
 
 setup(
     name="eth-brownie",
-    packages=find_packages(),
-    version="1001.22.0",  # don't change this manually, use bumpversion instead
+    packages=find_namespace_packages(
+        include=["brownie", "brownie.*"],
+        exclude=["brownie.__pycache__", "brownie.*.__pycache__"],
+    ),
+    version="1001.22.2.3",  # don't change this manually, use bumpversion instead
     license="MIT",
     description="A Python framework for Ethereum smart contract deployment, testing and interaction.",  # noqa: E501
     long_description=long_description,
@@ -93,15 +101,18 @@ setup(
         "console_scripts": ["brownie=brownie._cli.__main__:main"],
         "pytest11": ["pytest-brownie=brownie.test.plugin"],
     },
-    package_data={"brownie": ["py.typed"]},
-    include_package_data=True,
+    package_data={
+        "brownie": ["py.typed"],
+        "brownie.data": ["*.yaml"],
+        "brownie.data.interfaces": ["*.json"],
+        "brownie.data.contracts": ["*.sol"],
+    },
     ext_modules=ext_modules,
     python_requires=">=3.10,<4",
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
         "Topic :: Software Development :: Build Tools",
-        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",

@@ -1,7 +1,7 @@
+import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
 from typing import Any, Final, final
 
 import faster_hexbytes
@@ -10,7 +10,7 @@ from web3.types import LogReceipt, RPCEndpoint
 
 from brownie._c_constants import HexBytes, ujson_dumps
 from brownie._config import CONFIG, _get_data_folder
-from brownie.network.middlewares import BrownieMiddlewareABC
+from brownie.network.middlewares import BrownieMiddlewareABC, MakeRequestFn, RPCParams
 from brownie.utils.sql import Cursor
 
 # calls to the following RPC endpoints are stored in a persistent cache
@@ -18,6 +18,7 @@ from brownie.utils.sql import Cursor
 LONGTERM_CACHE: Final = {
     "eth_getCode": lambda w3, data: is_cacheable_bytecode(w3, data),
 }
+CACHE_FILTER_THREAD_JOIN_TIMEOUT: Final = 1.0
 
 
 def _strip_push_data(bytecode: bytes) -> bytes:
@@ -112,10 +113,12 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
 
         self.lock: Final = threading.Lock()
         self.event: Final = threading.Event()
+        self._stop_event: Final = threading.Event()
         self.start_block_filter_loop()
 
     def start_block_filter_loop(self):
         self.event.clear()
+        self._stop_event.clear()
         self.loop_thread = threading.Thread(target=self.loop_exception_handler, daemon=True)
         self.loop_thread.start()
         self.event.wait()
@@ -149,8 +152,12 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
             self.block_filter_loop()
         except Exception:
             # catch unhandled exceptions to avoid random error messages in the console
-            self.block_cache.clear()
+            block_cache = getattr(self, "block_cache", None)
+            if block_cache is not None:
+                block_cache.clear()
             self.is_killed = True
+        finally:
+            self.event.set()
 
     def block_filter_loop(self) -> None:
         # initialize required state variables within the loop to avoid recursion death
@@ -164,7 +171,7 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
         self.event.set()
 
         new_blocks: list[LogReceipt]
-        while not self.is_killed:
+        while not self.is_killed and not self._stop_event.is_set():
             # if the last RPC request was > 60 seconds ago, reduce the rate of updates.
             # we eventually settle at one query per minute after 10 minutes of no requests.
             with self.lock:
@@ -173,6 +180,8 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
                     self.event.clear()
             if self.time_since > 60:
                 self.event.wait(min(self.time_since / 10, 60))
+                if self._stop_event.is_set():
+                    break
 
             # query the filter for new blocks
             with self.lock:
@@ -192,12 +201,13 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
                 else:
                     should_skip = False
                     if new_blocks:
-                        self.block_cache[new_blocks[-1]] = {}
+                        block_cache = self.block_cache
+                        block_cache[new_blocks[-1]] = {}
                         self.last_block = new_blocks[-1]
                         self.last_block_seen = time.time()
-                        if len(self.block_cache) > 5:
-                            old_key = list(self.block_cache)[0]
-                            del self.block_cache[old_key]
+                        if len(block_cache) > 5:
+                            old_key = list(block_cache)[0]
+                            del block_cache[old_key]
 
             # continue in try: except: block is not supported by mypyc
             # as of jul 23 2025 so we use this workaround instead.
@@ -207,21 +217,24 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
             elif new_blocks and self.time_since < 15:
                 # if this update found a new block and we've been querying
                 # frequently, we can wait a few seconds before the next update
-                time.sleep(5)
+                if self._stop_event.wait(5):
+                    break
             elif time.time() - self.last_block_seen < 15:
                 # if it's been less than 15 seconds since the last block, wait 2 seconds
-                time.sleep(2)
+                if self._stop_event.wait(2):
+                    break
             else:
                 # if it's been more than 15 seconds, only wait 1 second
-                time.sleep(1)
+                if self._stop_event.wait(1):
+                    break
 
     def process_request(
         self,
-        make_request: Callable,
+        make_request: MakeRequestFn,
         method: RPCEndpoint,
-        params: Sequence[Any],
+        params: RPCParams,
     ) -> dict[str, Any]:
-        if method in (
+        if method in {
             # caching any of these means we die of recursion death so let's not do that
             "eth_getFilterChanges",
             "eth_newBlockFilter",
@@ -236,7 +249,7 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
             "eth_getTransactionByHash",
             "eth_getTransactionReceipt",
             "eth_chainId",
-        ):
+        }:
             return make_request(method, params)
 
         # try to return a cached value
@@ -252,7 +265,7 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
                 data = row[0]
                 if isinstance(data, bytes):
                     data = HexBytes(data)
-                return {"id": "cache", "jsonrpc": "2.0", "result": data}
+                return {"id": sys.maxsize, "jsonrpc": "2.0", "result": data}
 
         if not self.loop_thread.is_alive():
             # restart the block filter loop if it has crashed (usually from a ConnectionError)
@@ -269,8 +282,8 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
         # cached value is unavailable, make a request and cache the result
         with self.lock:
             response = make_request(method, params)
-            self.block_cache.setdefault(self.last_block, {}).setdefault(method, {})
-            self.block_cache[self.last_block][method][param_str] = response
+            method_cache = self.block_cache.setdefault(self.last_block, {}).setdefault(method, {})
+            method_cache[param_str] = response
 
         # check if the value can be added to long-term cache
         if "result" in response and method in LONGTERM_CACHE:
@@ -284,6 +297,14 @@ class RequestCachingMiddleware(BrownieMiddlewareABC):
 
     def uninstall(self) -> None:
         self.is_killed = True
-        self.block_cache.clear()
-        if self.w3.isConnected():
-            self.w3.eth.uninstall_filter(self.block_filter.filter_id)
+        self._stop_event.set()
+        self.event.set()
+        block_cache = getattr(self, "block_cache", None)
+        if block_cache is not None:
+            block_cache.clear()
+        block_filter = getattr(self, "block_filter", None)
+        if self.w3.isConnected() and block_filter is not None:
+            self.w3.eth.uninstall_filter(block_filter.filter_id)
+        loop_thread = getattr(self, "loop_thread", None)
+        if loop_thread is not None and loop_thread is not threading.current_thread():
+            loop_thread.join(CACHE_FILTER_THREAD_JOIN_TIMEOUT)

@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased](https://github.com/eth-brownie/brownie)
 
-## [1.22.0.dev1](https://github.com/eth-brownie/brownie/tree/v1.22.0.dev1) - 2026-01-06
+## [1.22.2](https://github.com/eth-brownie/brownie/tree/v1.22.2) - 2026-06-21
+
+### Added
+- Add BattleChain to network config ([#2255](https://github.com/eth-brownie/brownie/pull/2255)
+
+### Fixed
+- [Fix parity](https://github.com/BobTheBuidler/faster-eth-utils/pull/319) between [eth-utils](https://github.com/ethereum/eth-utils) and [faster-eth-utils](https://github.com/BobTheBuidler/faster-eth-utils/) ([#2258](https://github.com/eth-brownie/brownie/pull/2258))
+- Fix typos in docstrings ([#2254](https://github.com/eth-brownie/brownie/pull/2254))
+- Fix init bake with `--force` ([#2257](https://github.com/eth-brownie/brownie/pull/2257)
+
+  
+## [1.22.1](https://github.com/eth-brownie/brownie/tree/v1.22.1) - 2026-06-06
+
+### Changed
+- Mark type aliases explicit ([#2220](https://github.com/eth-brownie/brownie/pull/2220))
+- Add Middlewares type alias ([#2221](https://github.com/eth-brownie/brownie/pull/2221))
+- Bump eth-event and faster-hexbytes ([#2222](https://github.com/eth-brownie/brownie/pull/2222))
+- Centralize middleware request typing ([#2226](https://github.com/eth-brownie/brownie/pull/2226))
+- Scope native compile workflow ([#2230](https://github.com/eth-brownie/brownie/pull/2230))
+- Microoptimize compiler build JSON updates ([#2234](https://github.com/eth-brownie/brownie/pull/2234))
+- Bump core Ganache actions for Node 24 ([#2235](https://github.com/eth-brownie/brownie/pull/2235))
+- Pin Ganache node toolchain to 20 ([#2237](https://github.com/eth-brownie/brownie/pull/2237))
+- Lint ([#2239](https://github.com/eth-brownie/brownie/pull/2239))
+- Add live explorer smoke test ([#2241](https://github.com/eth-brownie/brownie/pull/2241))
+- Bump Codecov action for Node 24 ([#2242](https://github.com/eth-brownie/brownie/pull/2242))
+- Scope prebuilt wheel lookup ([#2244](https://github.com/eth-brownie/brownie/pull/2244))
+- Bump python-dotenv from 0.16.0 to 1.2.2 ([#2245](https://github.com/eth-brownie/brownie/pull/2245))
+- Make tox consume uv lock ([#2247](https://github.com/eth-brownie/brownie/pull/2247))
+- Clarify compiled runtime contract for agents ([#2248](https://github.com/eth-brownie/brownie/pull/2248))
+- Run EVM tests on OS matrix ([#2249](https://github.com/eth-brownie/brownie/pull/2249))
+
+### Fixed
+- Fix release-blocking type errors ([#2223](https://github.com/eth-brownie/brownie/pull/2223))
+- Wake cache middleware sleep during uninstall ([#2224](https://github.com/eth-brownie/brownie/pull/2224))
+- Stop cache middleware filter thread ([#2225](https://github.com/eth-brownie/brownie/pull/2225))
+- Avoid public snapshot warning in always-transact ([#2228](https://github.com/eth-brownie/brownie/pull/2228))
+- Make missing autofetch tests hermetic ([#2229](https://github.com/eth-brownie/brownie/pull/2229))
+- Make from_explorer tests hermetic ([#2231](https://github.com/eth-brownie/brownie/pull/2231))
+- Synchronize alert message assertion ([#2232](https://github.com/eth-brownie/brownie/pull/2232))
+- Use dev artifacts for persistence tests ([#2233](https://github.com/eth-brownie/brownie/pull/2233))
+- Make mainnet web3 selection hermetic ([#2236](https://github.com/eth-brownie/brownie/pull/2236))
+- Synchronize alert callbacks ([#2238](https://github.com/eth-brownie/brownie/pull/2238))
+- Harden network fixture disconnect cleanup ([#2240](https://github.com/eth-brownie/brownie/pull/2240))
+- Make ENS resolution tests hermetic ([#2243](https://github.com/eth-brownie/brownie/pull/2243))
+- Resolve anvil executable on Windows ([#2250](https://github.com/eth-brownie/brownie/pull/2250))
+- Remove stale Vyper pragma xfail ([#2251](https://github.com/eth-brownie/brownie/pull/2251))
+
+## [1.22.0](https://github.com/eth-brownie/brownie/tree/v1.22.0) - 2026-05-24
 
 ### Changed
 - Compile brownie to C to make it much faster and efficient ([#1875](https://github.com/eth-brownie/brownie/pull/1875) and others)
@@ -20,6 +67,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Various TypedDict definitions and other typing improvements
 - Expanded typing coverage and stricter mypy flags for better editor support ([#2051](https://github.com/eth-brownie/brownie/pull/2051), [#2053](https://github.com/eth-brownie/brownie/pull/2053), [#2056](https://github.com/eth-brownie/brownie/pull/2056), [#2082](https://github.com/eth-brownie/brownie/pull/2082), [#2086](https://github.com/eth-brownie/brownie/pull/2086), [#2110](https://github.com/eth-brownie/brownie/pull/2110))
 - Pinned build dependencies and wheel naming for consistent artifacts ([#2050](https://github.com/eth-brownie/brownie/pull/2050), [#2059](https://github.com/eth-brownie/brownie/pull/2059))
+- Upgrade web3 to v7 and update middleware integration ([#2128](https://github.com/eth-brownie/brownie/pull/2128))
+- Bump ujson from 5.11.0 to 5.12.0 ([#2131](https://github.com/eth-brownie/brownie/pull/2131))
+- Bump web3 from 7.14.1 to 7.15.0 ([#2138](https://github.com/eth-brownie/brownie/pull/2138))
+- Speed up stream downloads ([#2146](https://github.com/eth-brownie/brownie/pull/2146))
+- Bump ujson from 5.12.0 to 5.12.1 ([#2151](https://github.com/eth-brownie/brownie/pull/2151))
+- Microoptimize attr lookups ([#2159](https://github.com/eth-brownie/brownie/pull/2159))
+- Microoptimize attr lookups in transaction.py ([#2160](https://github.com/eth-brownie/brownie/pull/2160))
+- Use anvil as the default development backend ([#2163](https://github.com/eth-brownie/brownie/pull/2163))
+- Bump mypycify to v0.3.3 ([#2166](https://github.com/eth-brownie/brownie/pull/2166))
+- Homogenize testing stack across pythons ([#2177](https://github.com/eth-brownie/brownie/pull/2177))
+- Remove deprecated caches from release workflow ([#2178](https://github.com/eth-brownie/brownie/pull/2178))
+- Compile mypyc with --strict ([#2181](https://github.com/eth-brownie/brownie/pull/2181))
 
 ### Fixed
 - Prevent brownie console crash when X11 is not available ([#2088](https://github.com/eth-brownie/brownie/pull/2088))
@@ -32,6 +91,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - typing for *args and **kwargs ([#1870](https://github.com/eth-brownie/brownie/pull/1870))
 - singleton metaclass instance typing ([#1888](https://github.com/eth-brownie/brownie/pull/1888))
 - various other minor typing issues
+- TypeError in `_get_deployment` ([#2122](https://github.com/eth-brownie/brownie/pull/2122))
+- solc download errors with py-solc-x >=2.0.5 ([#2126](https://github.com/eth-brownie/brownie/pull/2126))
+- web3.py v7 middleware integration ([#2136](https://github.com/eth-brownie/brownie/pull/2136))
+- Always release confirmed receipts ([#2142](https://github.com/eth-brownie/brownie/pull/2142))
+- Support forked pull requests in CI ([#2147](https://github.com/eth-brownie/brownie/pull/2147))
+- Remove unsafe `eval()` in networks.py ([#2152](https://github.com/eth-brownie/brownie/pull/2152))
+- Adapt test_event.py imports to web3 v7 ([#2156](https://github.com/eth-brownie/brownie/pull/2156))
+- web3.py v7 error handling ([#2157](https://github.com/eth-brownie/brownie/pull/2157))
+- solcx version handling ([#2158](https://github.com/eth-brownie/brownie/pull/2158))
+- Compile evm tests with matrix settings ([#2161](https://github.com/eth-brownie/brownie/pull/2161))
+- Make plugin isolation tests less brittle ([#2162](https://github.com/eth-brownie/brownie/pull/2162))
+- Anvil launcher options ([#2164](https://github.com/eth-brownie/brownie/pull/2164))
+- Rollback coverage calls with snapshots ([#2165](https://github.com/eth-brownie/brownie/pull/2165))
+- Decode anvil transaction return values ([#2167](https://github.com/eth-brownie/brownie/pull/2167))
+- Decode anvil revert data ([#2168](https://github.com/eth-brownie/brownie/pull/2168))
+- Recover dev revert strings from trace source ([#2169](https://github.com/eth-brownie/brownie/pull/2169))
+- Assert invalid given arguments directly ([#2170](https://github.com/eth-brownie/brownie/pull/2170))
+- Make plugin given block height backend neutral ([#2171](https://github.com/eth-brownie/brownie/pull/2171))
+- Normalize prefixed trace memory words ([#2172](https://github.com/eth-brownie/brownie/pull/2172))
+- Sync plugin child network config ([#2173](https://github.com/eth-brownie/brownie/pull/2173))
+- Declare package data namespace packages ([#2179](https://github.com/eth-brownie/brownie/pull/2179))
+- Fix new --strict errs ([#2182](https://github.com/eth-brownie/brownie/pull/2182))
+- Use current stdout in pytest printer ([#2183](https://github.com/eth-brownie/brownie/pull/2183))
+- Fix C file regeneration after pushes ([#2184](https://github.com/eth-brownie/brownie/pull/2184))
+- Fix core-ganache workflow ([#2185](https://github.com/eth-brownie/brownie/pull/2185))
+- Preserve ganache default account balance ([#2186](https://github.com/eth-brownie/brownie/pull/2186))
+- Allow non-isolated tests under xdist ([#2187](https://github.com/eth-brownie/brownie/pull/2187))
+- Load plugin child projects consistently under xdist ([#2188](https://github.com/eth-brownie/brownie/pull/2188))
+- Type source map ids as integers ([#2189](https://github.com/eth-brownie/brownie/pull/2189))
+- Fix given wrapper kwarg validation ([#2190](https://github.com/eth-brownie/brownie/pull/2190))
+- Stabilize plugin child fixture state ([#2191](https://github.com/eth-brownie/brownie/pull/2191))
+- Fix plugin child harness state ([#2192](https://github.com/eth-brownie/brownie/pull/2192))
+- Select backend-specific rpc tests ([#2193](https://github.com/eth-brownie/brownie/pull/2193))
+- Normalize ganache time travel ([#2194](https://github.com/eth-brownie/brownie/pull/2194))
+- Stabilize event watcher shutdown ([#2195](https://github.com/eth-brownie/brownie/pull/2195))
+- Normalize ganache time travel ([#2196](https://github.com/eth-brownie/brownie/pull/2196))
+- Link libraries from solc link references ([#2197](https://github.com/eth-brownie/brownie/pull/2197))
+- Harden event watcher shutdown lifecycle ([#2198](https://github.com/eth-brownie/brownie/pull/2198))
+- Serialize chain time-travel snapshots ([#2199](https://github.com/eth-brownie/brownie/pull/2199))
+- Guard empty Solidity metadata stripping ([#2200](https://github.com/eth-brownie/brownie/pull/2200))
+- Restore Ganache default account balance ([#2201](https://github.com/eth-brownie/brownie/pull/2201))
+- Compile multicall with the configured Ganache hardfork ([#2202](https://github.com/eth-brownie/brownie/pull/2202))
+- Use web3 v7 event filter keyword arguments ([#2203](https://github.com/eth-brownie/brownie/pull/2203))
+- Build web3 RPC error middleware tests with web3 objects ([#2204](https://github.com/eth-brownie/brownie/pull/2204))
+- Normalize fake solcx install versions in compiler tests ([#2205](https://github.com/eth-brownie/brownie/pull/2205))
+- Propagate project development cmd settings ([#2206](https://github.com/eth-brownie/brownie/pull/2206))
+- Honor explorer ABI fallback persistence ([#2207](https://github.com/eth-brownie/brownie/pull/2207))
+- Fix remaining bad test assumptions ([#2208](https://github.com/eth-brownie/brownie/pull/2208))
+- Run event callbacks once per nonrepeat watcher ([#2209](https://github.com/eth-brownie/brownie/pull/2209))
+- Remove pytest skip strict keyword ([#2210](https://github.com/eth-brownie/brownie/pull/2210))
+- Normalize explorer solc version checks ([#2211](https://github.com/eth-brownie/brownie/pull/2211))
+- Guard old Vyper output selection cleanup ([#2212](https://github.com/eth-brownie/brownie/pull/2212))
+- Stop event watcher before disconnect ([#2213](https://github.com/eth-brownie/brownie/pull/2213))
+- Narrow event watcher provider teardown guard ([#2214](https://github.com/eth-brownie/brownie/pull/2214))
+- Reject empty code contract attachment ([#2215](https://github.com/eth-brownie/brownie/pull/2215))
+- Make PragmaNotFound an exception subclass ([#2216](https://github.com/eth-brownie/brownie/pull/2216))
+- Microoptimize cache middleware gate ([#2218](https://github.com/eth-brownie/brownie/pull/2218))
+- Use Petersburg for Vyper beta16 default EVM ([#2217](https://github.com/eth-brownie/brownie/pull/2217))
 
 ## [1.21.0](https://github.com/eth-brownie/brownie/tree/v1.21.0) - 2025-05-23
 ### Fixed

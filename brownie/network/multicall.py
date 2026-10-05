@@ -162,16 +162,17 @@ class Multicall:
             self._block_number[get_ident()] or web3.eth.get_block_number()
         )
 
-        if self.address is None:
+        address = self.address
+        if address is None:
             raise ContractNotFound(
                 "Must set Multicall address via `brownie.multicall(address=...)`"
             )
-        elif not web3.eth.get_code(self.address, block_identifier=self.block_number):
+        elif not web3.eth.get_code(address, block_identifier=self.block_number):
             raise ContractNotFound(
-                f"Multicall at address {self.address} does not exist at block {self.block_number}"
+                f"Multicall at address {address} does not exist at block {self.block_number}"
             )
 
-        self._contract = Contract.from_abi("Multicall", self.address, MULTICALL2_ABI)
+        self._contract = Contract.from_abi("Multicall", address, MULTICALL2_ABI)
         getattr(ContractCall, "__multicall")[get_ident()] = self
 
     def __exit__(self, exc_type: Exception, exc_val: Any, exc_tb: TracebackType) -> None:
@@ -190,7 +191,16 @@ class Multicall:
             tx_params: parameters passed to the `deploy` method of the `Multicall2` contract
                 container.
         """
-        project = compile_source(MULTICALL2_SOURCE)
-        deployment = project.Multicall2.deploy(tx_params)  # type: ignore
-        CONFIG.active_network["multicall2"] = deployment.address  # @UndefinedVariable
+        evm_version = _active_network_evm_version()
+        kwargs = {"evm_version": evm_version} if evm_version else {}
+        project = compile_source(MULTICALL2_SOURCE, **kwargs)
+        deployment = project.Multicall2.deploy(tx_params)
+        CONFIG.active_network["multicall2"] = deployment.address
         return deployment
+
+
+def _active_network_evm_version() -> str | None:
+    cmd_settings = CONFIG.active_network.get("cmd_settings") or {}
+    if not isinstance(cmd_settings, dict):
+        return None
+    return cmd_settings.get("evm_version")

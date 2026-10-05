@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 import logging
-from typing import Final
+from typing import Final, cast
 
 import semantic_version
 import vvm
@@ -53,7 +53,8 @@ EVM_VERSION_MAPPING: Final = [
     ("shanghai", Version("0.3.9")),
     ("paris", Version("0.3.7")),
     ("berlin", Version("0.2.12")),
-    ("istanbul", Version("0.1.0-beta.16")),
+    ("istanbul", Version("0.1.0-beta.17")),
+    ("petersburg", Version("0.1.0-beta.16")),
 ]
 
 _get_installed_vyper_versions: Final = vvm.get_installed_vyper_versions
@@ -263,8 +264,9 @@ def compile_from_input_json(
         print(f"  Vyper version: {version}")
     if version < Version("0.1.0-beta.17"):
         outputs = input_json["settings"]["outputSelection"]["*"]["*"]
-        outputs.remove("userdoc")
-        outputs.remove("devdoc")
+        for unsupported_output in ("userdoc", "devdoc"):
+            if unsupported_output in outputs:
+                outputs.remove(unsupported_output)
     if version == Version(vyper.__version__):
         try:
             return vyper_json.compile_json(input_json)
@@ -272,9 +274,6 @@ def compile_from_input_json(
             raise exc.with_traceback(None)
     else:
         try:
-            # NOTE: vvm uses `packaging.version.Version` which is not compatible with
-            #       `semantic_version.Version` so we first must cast it as a string
-            version = str(version)
             return _vvm_compile_standard(input_json, base_path=allow_paths, vyper_version=version)
         except vvm.exceptions.VyperError as exc:
             raise CompilerError(exc, "vyper")
@@ -393,7 +392,7 @@ def _generate_coverage_data(
                     this.update(path="0", offset=(0, 0))  # type: ignore [call-arg]
             continue
 
-        offset: Offset = (start, start + stop)  # type: ignore [assignment]
+        offset: Offset = (start, start + stop)
         this["path"] = "0"
         this["offset"] = offset
 
@@ -448,12 +447,12 @@ def _generate_coverage_data(
         ):
             # branch coverage
             this["branch"] = count
-            this_fn = this["fn"]
-            branch_map.setdefault(this_fn, {})  # type: ignore [arg-type]
+            this_fn = cast(str, this["fn"])
+            branch_map.setdefault(this_fn, {})
             if node_ast_type == "If":
-                branch_map[this_fn][count] = _convert_src(node["test"]["src"]) + (False,)  # type: ignore [index]
+                branch_map[this_fn][count] = _convert_src(node["test"]["src"]) + (False,)
             else:
-                branch_map[this_fn][count] = offset + (True,)  # type: ignore [index]
+                branch_map[this_fn][count] = offset + (True,)
             count += 1
 
     first = pc_list[0]
@@ -482,9 +481,10 @@ def _find_node_by_offset(ast_json: VyperAstJson, offset: Offset) -> VyperAstNode
         if is_inside_offset(offset, converted_src):
             if converted_src == offset:
                 return node
-            node_list: VyperAstJson = [
-                i for i in node.values() if isinstance(i, dict) and "ast_type" in i  # type: ignore [misc]
-            ]
+            node_list: VyperAstJson = []
+            for i in node.values():
+                if isinstance(i, dict) and "ast_type" in i:
+                    node_list.append(i)  # type: ignore [arg-type]
             for v in node.values():
                 if isinstance(v, list):
                     node_list.extend(v)

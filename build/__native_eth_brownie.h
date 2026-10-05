@@ -199,14 +199,14 @@ typedef struct tuple_T16OOOOOOOOOOOOOOOO {
 } tuple_T16OOOOOOOOOOOOOOOO;
 #endif
 
-#ifndef MYPYC_DECLARED_tuple_T4IIOO
-#define MYPYC_DECLARED_tuple_T4IIOO
-typedef struct tuple_T4IIOO {
+#ifndef MYPYC_DECLARED_tuple_T4IIIO
+#define MYPYC_DECLARED_tuple_T4IIIO
+typedef struct tuple_T4IIIO {
     CPyTagged f0;
     CPyTagged f1;
-    PyObject *f2;
+    CPyTagged f2;
     PyObject *f3;
-} tuple_T4IIOO;
+} tuple_T4IIIO;
 #endif
 
 #ifndef MYPYC_DECLARED_tuple_T3IIO
@@ -818,6 +818,19 @@ typedef struct {
 typedef struct {
     PyObject_HEAD
     CPyVTableItem *vtable;
+    PyObject *___mypyc_generator_attribute__event;
+    int32_t ___mypyc_next_label__;
+    tuple_T3OOO ___mypyc_temp__0;
+    PyObject *___mypyc_temp__1;
+    PyObject *___mypyc_temp__2;
+    PyObject *___mypyc_temp__3;
+    PyObject *___mypyc_generator_attribute__name;
+    PyObject *___mypyc_generator_attribute__topic;
+} brownie___convert___normalize____iter_event_topics_genObject;
+
+typedef struct {
+    PyObject_HEAD
+    CPyVTableItem *vtable;
     vectorcallfunc vectorcall;
 } brownie___network___alert_____init___3_Alert_objObject;
 
@@ -943,12 +956,17 @@ typedef struct {
     uint32_t bitmap;
     PyObject *___mypyc_self__;
     PyObject *_self;
+    PyObject *_stop_event;
     PyObject *_workers_list;
     double _sleep_time;
-    PyObject *__;
+    PyObject *_due_watch_data;
+    PyObject *_key;
     PyObject *_elem;
     double _time_left;
     PyObject *_latest_events;
+    PyObject *_exc;
+    PyObject *_event_watch_data;
+    char _should_trigger;
 } brownie___network___event____loop_EventWatcher_envObject;
 
 typedef struct {
@@ -967,20 +985,19 @@ typedef struct {
 typedef struct {
     PyObject_HEAD
     CPyVTableItem *vtable;
-    vectorcallfunc vectorcall;
     PyObject *_w3;
 } brownie___network___middlewares___BrownieMiddlewareABCObject;
 
 typedef struct {
     PyObject_HEAD
     CPyVTableItem *vtable;
-    vectorcallfunc vectorcall;
     PyObject *_w3;
     uint32_t bitmap;
     PyObject *_table_key;
     PyObject *_cur;
     PyObject *_lock;
     PyObject *_event;
+    PyObject *__stop_event;
     PyObject *_loop_thread;
     char _is_killed;
     PyObject *_last_block;
@@ -999,28 +1016,24 @@ typedef struct {
 typedef struct {
     PyObject_HEAD
     CPyVTableItem *vtable;
-    vectorcallfunc vectorcall;
     PyObject *_w3;
 } brownie___network___middlewares___catch_tx_revert___TxRevertCatcherMiddlewareObject;
 
 typedef struct {
     PyObject_HEAD
     CPyVTableItem *vtable;
-    vectorcallfunc vectorcall;
     PyObject *_w3;
 } brownie___network___middlewares___ganache7___Ganache7MiddleWareObject;
 
 typedef struct {
     PyObject_HEAD
     CPyVTableItem *vtable;
-    vectorcallfunc vectorcall;
     PyObject *_w3;
 } brownie___network___middlewares___geth_poa___GethPOAMiddlewareObject;
 
 typedef struct {
     PyObject_HEAD
     CPyVTableItem *vtable;
-    vectorcallfunc vectorcall;
     PyObject *_w3;
 } brownie___network___middlewares___hardhat___HardhatMiddleWareObject;
 
@@ -1230,6 +1243,24 @@ typedef struct {
     CPyVTableItem *vtable;
     vectorcallfunc vectorcall;
 } brownie___network___state___priority_fee_Chain_objObject;
+
+typedef struct {
+    PyObject_HEAD
+    CPyVTableItem *vtable;
+    vectorcallfunc vectorcall;
+} brownie___network___state____set_time_offset_from_block_Chain_objObject;
+
+typedef struct {
+    PyObject_HEAD
+    CPyVTableItem *vtable;
+    vectorcallfunc vectorcall;
+} brownie___network___state____set_time_offset_from_rpc_Chain_objObject;
+
+typedef struct {
+    PyObject_HEAD
+    CPyVTableItem *vtable;
+    vectorcallfunc vectorcall;
+} brownie___network___state____take_snapshot_Chain_objObject;
 
 typedef struct {
     PyObject_HEAD
@@ -1588,6 +1619,7 @@ typedef struct {
     PyObject *_gas_values;
     PyObject *_contract;
     PyObject *_function;
+    PyObject *_source_path;
     PyObject *_k;
     CPyTagged _v;
     PyObject *_functions;

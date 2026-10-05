@@ -6,6 +6,7 @@ from brownie import project
 from brownie._config import CONFIG
 from brownie.convert import Wei
 from brownie.network.account import Accounts
+from brownie.network.event import event_watcher
 from brownie.network.gas.bases import GasABC
 from brownie.network.rpc import Rpc
 from brownie.network.state import Chain, _notify_registry
@@ -70,6 +71,7 @@ def disconnect(kill_rpc: bool = True) -> None:
     """Disconnects from the network."""
     if not is_connected():
         raise ConnectionError("Not connected to any network")
+    event_watcher.stop()
     CONFIG.clear_active()
     if kill_rpc and rpc.is_active() and rpc.is_child():
         rpc.kill()
@@ -119,18 +121,19 @@ def gas_price(*args: int | str | bool | None) -> int | bool:
 
     if not is_connected():
         raise ConnectionError("Not connected to any network")
+    settings = CONFIG.active_network["settings"]
     if args:
         if isinstance(args[0], GasABC):
-            CONFIG.active_network["settings"]["gas_price"] = args[0]  # @UndefinedVariable
+            settings["gas_price"] = args[0]
         elif args[0] in (None, False, True, "auto"):
-            CONFIG.active_network["settings"]["gas_price"] = False  # @UndefinedVariable
+            settings["gas_price"] = False
         else:
             try:
                 price = Wei(args[0])
             except ValueError:
                 raise TypeError(f"Invalid gas price '{args[0]}'")
-            CONFIG.active_network["settings"]["gas_price"] = price  # @UndefinedVariable
-    return CONFIG.active_network["settings"]["gas_price"]  # @UndefinedVariable
+            settings["gas_price"] = price
+    return settings["gas_price"]
 
 
 def gas_buffer(*args: float | None) -> float | None:
@@ -177,15 +180,16 @@ def priority_fee(*args: int | str | bool | None) -> int | bool:
     """
     if not is_connected():
         raise ConnectionError("Not connected to any network")
+    settings = CONFIG.active_network["settings"]
     if args:
         if args[0] in (None, False):
-            CONFIG.active_network["settings"]["priority_fee"] = None  # @UndefinedVariable
+            settings["priority_fee"] = None
         elif args[0] == "auto":
-            CONFIG.active_network["settings"]["priority_fee"] = "auto"  # @UndefinedVariable
+            settings["priority_fee"] = "auto"
         else:
             try:
                 price = Wei(args[0])
             except ValueError:
                 raise TypeError(f"Invalid priority fee '{args[0]}'")
-            CONFIG.active_network["settings"]["priority_fee"] = price  # @UndefinedVariable
-    return CONFIG.active_network["settings"]["priority_fee"]  # @UndefinedVariable
+            settings["priority_fee"] = price
+    return settings["priority_fee"]

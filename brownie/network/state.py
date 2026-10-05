@@ -7,7 +7,7 @@ import weakref
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from sqlite3 import OperationalError
-from typing import TYPE_CHECKING, Any, Final, Union, cast, final
+from typing import TYPE_CHECKING, Any, Final, TypeAlias, Union, cast, final
 
 from eth_typing import BlockNumber, ChecksumAddress, HexAddress, HexStr
 from web3.datastructures import AttributeDict
@@ -28,10 +28,13 @@ from brownie.utils.sql import Cursor
 if TYPE_CHECKING:
     from brownie.network.contract import Contract, ProjectContract
 
-PathMap = dict[str, tuple[HexStr, str]]
-Deployment = tuple[ContractBuildJson, dict[str, Any]]
+PathMap: TypeAlias = dict[str, tuple[HexStr, str]]
+Deployment: TypeAlias = tuple[ContractBuildJson, dict[str, Any]]
 
-AnyContract = Union["Contract", "ProjectContract"]
+UndoBuffer: TypeAlias = list[tuple[int | str, Any, tuple[Any, ...], dict[str, Any]]]
+RedoBuffer: TypeAlias = list[tuple[Any, tuple[Any, ...], dict[str, Any]]]
+
+AnyContract: TypeAlias = Union["Contract", "ProjectContract"]
 
 _contract_map: Final[dict[ChecksumAddress, AnyContract]] = {}
 _revert_refs: Final[list[weakref.ReferenceType]] = []
@@ -204,9 +207,11 @@ class Chain(metaclass=_Singleton):
         self._snapshot_id: int | str | None = None
         self._reset_id: int | str | None = None
         self._current_id: int | str | None = None
+        # RPC snapshots rewind backend state, not Brownie's local Python-side clock offset.
+        self._snapshot_time_offsets: dict[int | str, int] = {}
         self._undo_lock: Final = threading.Lock()
-        self._undo_buffer: Final[list[tuple[int | str, Any, tuple[Any, ...], dict[str, Any]]]] = []
-        self._redo_buffer: Final[list[tuple[Any, tuple[Any, ...], dict[str, Any]]]] = []
+        self._undo_buffer: Final[UndoBuffer] = []
+        self._redo_buffer: Final[RedoBuffer] = []
         self._chainid: int | None = None
         self._block_gas_time: int = -1
         self._block_gas_limit: int = 0
@@ -321,17 +326,55 @@ class Chain(metaclass=_Singleton):
             # fallback to legacy transactions if network does not support EIP1559
             return Wei(0)
 
+    def _set_time_offset_from_block(self) -> None:
+        """
+        Sync Brownie's clock to the latest block timestamp after mined chain activity.
+
+        Backend time-travel RPC return values differ, but the block timestamp is the
+        canonical clock once a transaction or block has been mined.
+        """
+        block: BlockData | AttributeDict = web3.eth.get_block("latest")
+        self._time_offset = int(block["timestamp"]) - int(time.time())
+
+    def _set_time_offset_from_rpc(self, value: Any) -> None:
+        """
+        Sync Brownie's clock from an explicit RPC offset response.
+
+        This is only used when intentionally syncing from the backend response; values
+        may arrive as decimal integers or as strings such as hex-encoded quantities.
+        """
+        if isinstance(value, str):
+            self._time_offset = int(value, 0)
+        else:
+            self._time_offset = int(value)
+
+    def _take_snapshot(self) -> int | str:
+        """
+        Take a Brownie-managed snapshot and store its paired local time offset.
+
+        The backend snapshot id alone cannot restore Brownie's Python-side offset.
+        """
+        snapshot_id: int | str = rpc.Rpc().snapshot()
+        self._snapshot_time_offsets[snapshot_id] = self._time_offset
+        return snapshot_id
+
     def _revert(self, id_: int | str) -> int | str:
         rpc_client = rpc.Rpc()
         if web3.isConnected() and not web3.eth.block_number and not self._time_offset:
             _notify_registry(BlockNumber(0))
-            return rpc_client.snapshot()
+            return self._take_snapshot()
+        time_offset = self._snapshot_time_offsets.get(id_)
         rpc_client.revert(id_)
-        id_ = rpc_client.snapshot()
-        try:
-            self.sleep(0)
-        except NotImplementedError:
-            pass
+        if time_offset is None:
+            # Older or external snapshot ids have no paired local offset; resync from chain state.
+            try:
+                self._set_time_offset_from_block()
+            except NotImplementedError:
+                pass
+        else:
+            # Brownie-created snapshots restore both backend state and local clock offset.
+            self._time_offset = time_offset
+        id_ = self._take_snapshot()
         _notify_registry()
         return id_
 
@@ -340,15 +383,17 @@ class Chain(metaclass=_Singleton):
     ) -> None:
         with self._undo_lock:
             tx._confirmed.wait()
-            self._undo_buffer.append((self._current_id, fn, args, kwargs))  # type: ignore [arg-type]
+            self._undo_buffer.append(
+                (self._current_id, fn, args, kwargs)  # type: ignore [arg-type]
+            )
             redo_buffer = self._redo_buffer
             if redo_buffer and (fn, args, kwargs) == redo_buffer[-1]:
                 redo_buffer.pop()
             else:
                 redo_buffer.clear()
-            self._current_id = rpc.Rpc().snapshot()
-            # ensure the local time offset is correct, in case it was modified by the transaction
-            self.sleep(0)
+            # Transactions can advance the backend clock, so resync from the mined block.
+            self._set_time_offset_from_block()
+            self._current_id = self._take_snapshot()
 
     def _network_connected(self) -> None:
         self._reset_id = None
@@ -364,6 +409,9 @@ class Chain(metaclass=_Singleton):
         self._snapshot_id = None
         self._reset_id = None
         self._current_id = None
+        # Snapshot ids are backend-session scoped; offsets tied to them are invalid now.
+        self._snapshot_time_offsets.clear()
+        self._time_offset = 0
         self._chainid = None
         _notify_registry(BlockNumber(0))
 
@@ -391,11 +439,18 @@ class Chain(metaclass=_Singleton):
         """
         if not isinstance(seconds, int):
             raise TypeError("seconds must be an integer value")
-        self._time_offset = int(rpc.Rpc().sleep(seconds))  # @UndefinedVariable
+        with self._undo_lock:
+            result = rpc.Rpc().sleep(seconds)
+            if seconds:
+                # Nonzero sleep semantics vary by backend, but the requested delta is stable.
+                self._time_offset += seconds
+            else:
+                # Zero-second sleep is used as an explicit backend offset sync.
+                self._set_time_offset_from_rpc(result)
 
-        if seconds:
-            self._redo_buffer.clear()
-            self._current_id = rpc.Rpc().snapshot()  # @UndefinedVariable
+            if seconds:
+                self._redo_buffer.clear()
+                self._current_id = self._take_snapshot()
 
     def mine(
         self, blocks: int = 1, timestamp: int | None = None, timedelta: int | None = None
@@ -422,31 +477,31 @@ class Chain(metaclass=_Singleton):
         """
         if not isinstance(blocks, int):
             raise TypeError("`blocks` must be an integer value")
+        with self._undo_lock:
+            if timedelta is not None:
+                if timestamp is not None:
+                    raise ValueError("Cannot use both `timestamp` and `timedelta`")
 
-        if timedelta is not None:
-            if timestamp is not None:
-                raise ValueError("Cannot use both `timestamp` and `timedelta`")
+                timestamp = self.time() + timedelta
 
-            timestamp = self.time() + timedelta
+            if timestamp is None:
+                params: list = [[] for _ in range(blocks)]
+            elif blocks == 1:
+                params = [[timestamp]]
+            else:
+                now = self.time()
+                duration = (timestamp - now) / (blocks - 1)
+                params = [[round(now + duration * i)] for i in range(blocks)]
 
-        if timestamp is None:
-            params: list = [[] for _ in range(blocks)]
-        elif blocks == 1:
-            params = [[timestamp]]
-        else:
-            now = self.time()
-            duration = (timestamp - now) / (blocks - 1)
-            params = [[round(now + duration * i)] for i in range(blocks)]
+            for i in range(blocks):
+                rpc.Rpc().mine(*params[i])
 
-        for i in range(blocks):
-            rpc.Rpc().mine(*params[i])  # @UndefinedVariable
+            if blocks:
+                self._set_time_offset_from_block()
 
-        if timestamp is not None:
-            self.sleep(0)
-
-        self._redo_buffer.clear()
-        self._current_id = rpc.Rpc().snapshot()  # @UndefinedVariable
-        return web3.eth.block_number
+            self._redo_buffer.clear()
+            self._current_id = self._take_snapshot()
+            return web3.eth.block_number
 
     def snapshot(self) -> None:
         """
@@ -454,9 +509,10 @@ class Chain(metaclass=_Singleton):
 
         This action clears the undo buffer.
         """
-        self._undo_buffer.clear()
-        self._redo_buffer.clear()
-        self._snapshot_id = self._current_id = rpc.Rpc().snapshot()  # @UndefinedVariable
+        with self._undo_lock:
+            self._undo_buffer.clear()
+            self._redo_buffer.clear()
+            self._snapshot_id = self._current_id = self._take_snapshot()
 
     def revert(self) -> BlockNumber:
         """
@@ -471,10 +527,11 @@ class Chain(metaclass=_Singleton):
         """
         if self._snapshot_id is None:
             raise ValueError("No snapshot set")
-        self._undo_buffer.clear()
-        self._redo_buffer.clear()
-        self._snapshot_id = self._current_id = self._revert(self._snapshot_id)
-        return web3.eth.block_number
+        with self._undo_lock:
+            self._undo_buffer.clear()
+            self._redo_buffer.clear()
+            self._snapshot_id = self._current_id = self._revert(self._snapshot_id)
+            return web3.eth.block_number
 
     def reset(self) -> BlockNumber:
         """
@@ -487,15 +544,16 @@ class Chain(metaclass=_Singleton):
         BlockNumber
             Current block height
         """
-        self._snapshot_id = None
-        self._undo_buffer.clear()
-        self._redo_buffer.clear()
-        if self._reset_id is None:
-            self._reset_id = self._current_id = rpc.Rpc().snapshot()
-            _notify_registry(BlockNumber(0))
-        else:
-            self._reset_id = self._current_id = self._revert(self._reset_id)
-        return web3.eth.block_number
+        with self._undo_lock:
+            self._snapshot_id = None
+            self._undo_buffer.clear()
+            self._redo_buffer.clear()
+            if self._reset_id is None:
+                self._reset_id = self._current_id = self._take_snapshot()
+                _notify_registry(BlockNumber(0))
+            else:
+                self._reset_id = self._current_id = self._revert(self._reset_id)
+            return web3.eth.block_number
 
     def undo(self, num: int = 1) -> BlockNumber:
         """
@@ -512,15 +570,16 @@ class Chain(metaclass=_Singleton):
             Current block height
         """
         with self._undo_lock:
+            undo_buffer = self._undo_buffer
             if num < 1:
                 raise ValueError("num must be greater than zero")
-            if not self._undo_buffer:
+            if not undo_buffer:
                 raise ValueError("Undo buffer is empty")
-            if num > len(self._undo_buffer):
-                raise ValueError(f"Undo buffer contains {len(self._undo_buffer)} items")
+            if num > len(undo_buffer):
+                raise ValueError(f"Undo buffer contains {len(undo_buffer)} items")
 
             for _ in range(num):
-                id_, fn, args, kwargs = self._undo_buffer.pop()
+                id_, fn, args, kwargs = undo_buffer.pop()
                 self._redo_buffer.append((fn, args, kwargs))
 
             self._current_id = self._revert(id_)
@@ -541,15 +600,16 @@ class Chain(metaclass=_Singleton):
             Current block height
         """
         with self._undo_lock:
+            redo_buffer = self._redo_buffer
             if num < 1:
                 raise ValueError("num must be greater than zero")
-            if not self._redo_buffer:
+            if not redo_buffer:
                 raise ValueError("Redo buffer is empty")
-            if num > len(self._redo_buffer):
-                raise ValueError(f"Redo buffer contains {len(self._redo_buffer)} items")
+            if num > len(redo_buffer):
+                raise ValueError(f"Redo buffer contains {len(redo_buffer)} items")
 
             for _ in range(num):
-                fn, args, kwargs = self._redo_buffer.pop()
+                fn, args, kwargs = redo_buffer.pop()
                 fn(*args, **kwargs)
 
             return web3.eth.block_number
@@ -637,10 +697,13 @@ def _get_deployment(
 
     keys = ("address", "alias", "paths") + DEPLOYMENT_KEYS
     build_json = cast(ContractBuildJson, dict(zip(keys, row)))
-    # when we json.dump the path map, the tuples are encoded as lists so we need to make them tuples again.
-    path_map: PathMap = {k: tuple(v) for k, v in build_json.pop("paths", {}).items()}  # type: ignore [typeddict-item]
+    path_values = build_json.pop("paths", {})  # type: ignore [typeddict-item]
+    # json.dump encodes the path-map tuples as lists, so convert them back.
+    path_map: PathMap = {k: tuple(v) for k, v in path_values.items()}
     sources: dict[str, Any] = {
-        i[1]: cur.fetchone("SELECT source FROM sources WHERE hash=?", (i[0],))[0]  # type: ignore [index]
+        i[1]: cur.fetchone("SELECT source FROM sources WHERE hash=?", (i[0],))[
+            0
+        ]  # type: ignore [index]
         for i in path_map.values()
     }
 
