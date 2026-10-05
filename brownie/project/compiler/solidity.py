@@ -8,7 +8,7 @@ import solcast
 import solcx
 import solcx.exceptions
 from eth_typing import ABIElement, HexStr
-from packaging.version import Version as PVersion
+from packaging.version import Version
 from requests.exceptions import ConnectionError
 from solcast.nodes import NodeBase, is_inside_offset
 
@@ -58,7 +58,7 @@ EVM_VERSION_MAPPING: Final = [
 PcMap: TypeAlias = dict[Count, ProgramCounter]
 StatementNodes: TypeAlias = dict[str, set[Offset]]
 BranchNodes: TypeAlias = dict[str, set[NodeBase]]
-SolcxVersion: TypeAlias = VersionSpec | PVersion
+SolcxVersion: TypeAlias = VersionSpec | Version
 
 _BINOPS_PARAMS: Final = {"nodeType": "BinaryOperation", "typeDescriptions.typeString": "bool"}
 
