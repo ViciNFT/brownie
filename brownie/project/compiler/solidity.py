@@ -8,13 +8,14 @@ import solcast
 import solcx
 import solcx.exceptions
 from eth_typing import ABIElement, HexStr
-from packaging.version import Version as PVersion
+from packaging.version import Version
 from requests.exceptions import ConnectionError
 from solcast.nodes import NodeBase, is_inside_offset
 
 from brownie._c_constants import deque, sha1
 from brownie._config import EVM_EQUIVALENTS
 from brownie.exceptions import CompilerError, IncompatibleSolcVersion  # noqa
+from brownie.project.compiler import sources
 from brownie.project.compiler.utils import VersionList, VersionSpec, _get_alias, expand_source_map
 from brownie.typing import (
     BranchMap,
@@ -32,9 +33,6 @@ from brownie.typing import (
     StatementMap,
 )
 from brownie.utils import hash_source
-
-from brownie.project.compiler import sources
-from packaging.version import Version
 
 solcx_logger: Final = logging.getLogger("solcx")
 solcx_logger.setLevel(10)
@@ -60,7 +58,7 @@ EVM_VERSION_MAPPING: Final = [
 PcMap: TypeAlias = dict[Count, ProgramCounter]
 StatementNodes: TypeAlias = dict[str, set[Offset]]
 BranchNodes: TypeAlias = dict[str, set[NodeBase]]
-SolcxVersion: TypeAlias = VersionSpec | PVersion
+SolcxVersion: TypeAlias = VersionSpec | Version
 
 _BINOPS_PARAMS: Final = {"nodeType": "BinaryOperation", "typeDescriptions.typeString": "bool"}
 
