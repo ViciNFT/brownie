@@ -1830,7 +1830,7 @@ class ContractEmittedEvent(_ContractFragment):
     def call(self, *args, **kwargs) -> Any:
         return self(*args)
 
-    def __call__(self, *args: Any) -> Any:
+    def __call__(self, *args: Any, **kwargs) -> Any:
         encoded = self.encode_input(*args)
         decoded = self.decode_input(encoded)
 
@@ -1851,7 +1851,7 @@ class ContractError(_ContractFragment):
     def call(self, *args: Any, original_error: Optional[Exception] = None, **kwargs) -> Any:
         return self(*args, original_error=original_error)
 
-    def __call__(self, *args: Any, original_error: Optional[Exception] = None) -> Any:
+    def __call__(self, *args: Any, original_error: Optional[Exception] = None, **kwargs) -> Any:
         encoded = self.encode_input(*args)
         decoded = self.decode_input(encoded)
 
@@ -2089,7 +2089,7 @@ class ContractTx(_ContractMethod):
         Bytes4 method signature.
     """
 
-    def __call__(self, *args: Any, silent: bool = False) -> TransactionReceiptType:
+    def __call__(self, *args: Any, silent: bool = False, **kwargs) -> TransactionReceiptType:
         """
         Broadcast a transaction that calls this contract method.
 
